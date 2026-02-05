@@ -1,0 +1,25 @@
+services:
+  finance-tools:
+    build: .
+    volumes:
+      - .:/app # dismisses the need for -v "${PWD}:/app" flag for visualize_indicators.py
+      - /app/node_modules
+    environment:
+      - PYTHONUNBUFFERED=1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    stdin_open: true
+    tty: true
+
+  api-server:
+    build: .
+    command: python api_server.py
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+      - /app/node_modules
+    environment:
+      - PYTHONUNBUFFERED=1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

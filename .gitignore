@@ -1,0 +1,17 @@
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Project Specific
+visualizer/*.png
+visualizer/*.html
+test/
+
+# OS
+.DS_Store
+Thumbs.db
