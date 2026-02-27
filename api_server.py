@@ -6,7 +6,6 @@ Provides HTTP endpoints for finance tools with structured JSON responses.
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, List
-import uvicorn
 
 from api_types import GEXRequest, IndicatorsRequest, GEXResponse, IndicatorsResponse, ErrorResponse
 from api_handlers import getGEXData, getIndicatorsData
@@ -150,6 +149,7 @@ async def postIndicators(request: IndicatorsRequest):
 # ============================================================================
 
 if __name__ == "__main__":
+    import uvicorn # not compatible with vercel. moved here for local run
     uvicorn.run(
         "api_server:app",
         host="0.0.0.0",
