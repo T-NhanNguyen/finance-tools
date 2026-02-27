@@ -165,8 +165,8 @@ export class FinanceAPIClient {
  * Automatically uses environment variables for Vercel/Production deployment
  */
 export const createClient = (
-  baseURL: string = process.env.NEXT_PUBLIC_FINANCE_API_URL || 
-             process.env.VITE_FINANCE_API_URL || 
+  baseURL: string = process.env.NEXT_PUBLIC_FINANCE_API_URL ?? 
+             process.env.VITE_FINANCE_API_URL ?? 
              'http://localhost:8000'
 ) => {
   return new FinanceAPIClient({ baseURL });
