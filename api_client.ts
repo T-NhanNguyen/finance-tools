@@ -162,9 +162,13 @@ export class FinanceAPIClient {
 
 /**
  * Create a default client instance
- * Update baseURL to match your deployment
+ * Automatically uses environment variables for Vercel/Production deployment
  */
-export const createClient = (baseURL: string = 'http://localhost:8000') => {
+export const createClient = (
+  baseURL: string = process.env.NEXT_PUBLIC_FINANCE_API_URL || 
+             process.env.VITE_FINANCE_API_URL || 
+             'http://localhost:8000'
+) => {
   return new FinanceAPIClient({ baseURL });
 };
 
