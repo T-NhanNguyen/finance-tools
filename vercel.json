@@ -1,4 +1,9 @@
 {
+  "functions": {
+    "api/**/*.py": {
+      "excludeFiles": "{test/**,__pycache__/**,node_modules/**,visualize_*.py,mcp*.py,*.ts,*.md,Dockerfile,docker-compose.yml,.dockerignore,.gitignore}"
+    }
+  },
   "rewrites": [
     {
       "source": "/api/(.*)",

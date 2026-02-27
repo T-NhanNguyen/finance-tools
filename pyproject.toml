@@ -1,0 +1,22 @@
+[project]
+name = "finance-tools-api"
+version = "1.0.0"
+description = "RESTful API for gamma exposure and technical indicator analysis"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "yfinance>=0.2.40",
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+    "fastapi>=0.104.0",
+    "pydantic>=2.0.0",
+]
+
+# matplotlib and scipy are NOT needed for the serverless API endpoints
+# They are only used locally for visualization scripts
+
+[tool.uv]
+# Exclude multitasking - it has no wheel on PyPI and Vercel's uv
+# runs with --no-build. multitasking is a transitive dep of yfinance
+# but yfinance works fine without it (only used for optional concurrent downloads)
+exclude-dependencies = ["multitasking"]
