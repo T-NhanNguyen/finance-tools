@@ -1,6 +1,5 @@
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 from get_technical_indicator import (
     getIndicators, IndicatorType, generateTradingSignals, 
     calculateTheilSenSlope, MINIMUM_SEGMENT_LENGTH, INITIAL_INDEX_OFFSET,
@@ -15,6 +14,7 @@ def plotIndicators(ticker: str, period: PricePeriod = PricePeriod.SIX_MONTHS):
     """
     Fetches data and creates a two-panel visualization for MACD and OBV with Trendlines.
     """
+    import matplotlib.pyplot as plt # moved here so we can run this on serverless
     print(f"Fetching data for {ticker}...")
     indicatorsToCalculate = [
         IndicatorType.MACD,
