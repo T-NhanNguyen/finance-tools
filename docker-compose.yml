@@ -1,5 +1,6 @@
 services:
   finance-tools:
+    image: finance-tools:latest
     build: .
     volumes:
       - .:/app # dismisses the need for -v "${PWD}:/app" flag for visualize_indicators.py
@@ -12,6 +13,7 @@ services:
     tty: true
 
   api-server:
+    image: finance-api:latest
     build: .
     command: python api_server.py
     ports:
