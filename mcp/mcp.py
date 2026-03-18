@@ -1,18 +1,15 @@
-import get_options_data
-import get_technical_indicator
 import sys
 import json
 import re
 import ast
-import get_stock_price
-import get_options_data
 import pandas as pd
 from typing import Any, Dict
 import numpy as np
-import get_financial_statement
-import json_to_tson
-import calculate_gamma_delta
 from datetime import datetime
+
+import core.data as data
+import core.analysis as analysis
+import client.json_to_tson as json_to_tson
 
 # --- Constants ---
 DEFAULT_PRECISION = 4
@@ -151,7 +148,7 @@ def routeCommand(commandString: str) -> str:
         if not ticker or not isinstance(ticker, str):
             return _formatMcpResponse(None, error="getCurrentPrice expects a 'ticker' string")
         
-        price = get_stock_price.getCurrentPrice(ticker)
+        price = data.getCurrentPrice(ticker)
         if price is None:
              return _formatMcpResponse(None, error=f"Could not retrieve price for {ticker}")
              
@@ -167,7 +164,7 @@ def routeCommand(commandString: str) -> str:
         if not isinstance(tickers, list):
             return _formatMcpResponse(None, error="getCurrentPricesBulk expects a 'tickers' list")
         
-        prices = get_stock_price.getCurrentPricesBulk(tickers)
+        prices = data.getCurrentPricesBulk(tickers)
         return _formatMcpResponse({
             "results": prices
         })
@@ -179,7 +176,7 @@ def routeCommand(commandString: str) -> str:
         if not ticker:
             return _formatMcpResponse(None, error="getHistoricalPrices expects a ticker")
         
-        prices = get_stock_price.getHistoricalPrices(
+        prices = data.getHistoricalPrices(
             ticker, 
             startDate=params.get("startDate"), 
             endDate=params.get("endDate")
@@ -196,7 +193,7 @@ def routeCommand(commandString: str) -> str:
         if not isinstance(tickers, list):
             return _formatMcpResponse(None, error="getHistoricalPricesBulk expects a tickers list")
             
-        prices = get_stock_price.getHistoricalPricesBulk(
+        prices = data.getHistoricalPricesBulk(
             tickers, 
             startDate=params.get("startDate"), 
             endDate=params.get("endDate")
@@ -215,24 +212,24 @@ def routeCommand(commandString: str) -> str:
         
         # Indicators essential for Wykoff
         indicatorsToCalculate = [
-            get_technical_indicator.IndicatorType.SMA,
-            get_technical_indicator.IndicatorType.RSI,
-            get_technical_indicator.IndicatorType.MACD,
-            get_technical_indicator.IndicatorType.OBV
+            data.IndicatorType.SMA,
+            data.IndicatorType.RSI,
+            data.IndicatorType.MACD,
+            data.IndicatorType.OBV
         ]
         
-        specificIndicators = get_technical_indicator.getIndicators(
+        specificIndicators = data.getIndicators(
             ticker, 
             indicatorsToCalculate,
-            interval=get_technical_indicator.PriceInterval.ONE_DAY,
-            period=get_technical_indicator.PricePeriod.SIX_MONTHS,
+            interval=data.PriceInterval.ONE_DAY,
+            period=data.PricePeriod.SIX_MONTHS,
             startDate=params.get("startDate"),
             endDate=params.get("endDate")
         )
         
         if specificIndicators is not None:
             
-            trendSegments = get_technical_indicator.getTrendSegments(specificIndicators)
+            trendSegments = data.getTrendSegments(specificIndicators)
             return _formatMcpResponse({
                 "ticker": ticker.upper(),
                 "obvTrendSegments": trendSegments,
@@ -247,28 +244,28 @@ def routeCommand(commandString: str) -> str:
             
         intervalStr = params.get("interval", "daily")
         snapShotInterval = (
-            get_technical_indicator.PriceInterval.ONE_HOUR 
+            data.PriceInterval.ONE_HOUR 
             if intervalStr == "hourly" 
-            else get_technical_indicator.PriceInterval.ONE_DAY
+            else data.PriceInterval.ONE_DAY
         )
 
         indicatorsToCalculate = [
-            get_technical_indicator.IndicatorType.SMA,
-            get_technical_indicator.IndicatorType.RSI,
-            get_technical_indicator.IndicatorType.MACD,
-            get_technical_indicator.IndicatorType.BOLLINGER_BANDS,
-            get_technical_indicator.IndicatorType.OBV
+            data.IndicatorType.SMA,
+            data.IndicatorType.RSI,
+            data.IndicatorType.MACD,
+            data.IndicatorType.BOLLINGER_BANDS,
+            data.IndicatorType.OBV
         ]
 
-        specificIndicators = get_technical_indicator.getIndicators(
+        specificIndicators = data.getIndicators(
             ticker, 
             indicatorsToCalculate,
             interval=snapShotInterval,
-            period=get_technical_indicator.PricePeriod.THREE_MONTHS
+            period=data.PricePeriod.THREE_MONTHS
         )
         
         if specificIndicators is not None:
-            specificIndicators = get_technical_indicator.generateTradingSignals(specificIndicators)
+            specificIndicators = data.generateTradingSignals(specificIndicators)
             
             latestValues = specificIndicators.iloc[-1]
             latestSnapshot = latestValues.drop(labels=[c for c in COLUMNS_TO_DROP_GENERAL if c in latestValues.index])
@@ -305,18 +302,18 @@ def routeCommand(commandString: str) -> str:
             tolerance = atmCharacteristic.get("tolerance")
 
         if contractTypeArg and contractTypeArg.lower() == "call":
-            contractType = get_options_data.OptionType.CALL
+            contractType = data.OptionType.CALL
         elif contractTypeArg and contractTypeArg.lower() == "put":
-            contractType = get_options_data.OptionType.PUT
+            contractType = data.OptionType.PUT
         else:
-            contractType = get_options_data.OptionType.BOTH
+            contractType = data.OptionType.BOTH
 
         # Private helper functions
         def _applyFiltersToChain(chain):
             if not isinstance(chain, dict): return chain
             result = {}
 
-            # Have to run through each DataFrame in the dictionary because we can't just pipe it like in get_options_data.py, main
+            # Have to run through each DataFrame in the dictionary because we can't just pipe it like in data.py, main
             for key, df in chain.items():
                 if df is None or not hasattr(df, 'empty') or df.empty:
                     result[key] = df
@@ -325,15 +322,15 @@ def routeCommand(commandString: str) -> str:
                 filteredDf = df
                 if isinstance(filters, dict):
                     if filters.get("minVolume") is not None:
-                        filteredDf = get_options_data.filterByVolume(filteredDf, minVolume=filters["minVolume"])
+                        filteredDf = data.filterByVolume(filteredDf, minVolume=filters["minVolume"])
                     if filters.get("minOpenInterest") is not None:
-                        filteredDf = get_options_data.filterByOpenInterest(filteredDf, minOI=filters["minOpenInterest"])
+                        filteredDf = data.filterByOpenInterest(filteredDf, minOI=filters["minOpenInterest"])
                     if filters.get("minImpliedVolatility") is not None:
-                        filteredDf = get_options_data.filterByImpliedVolatility(filteredDf, minIV=filters["minImpliedVolatility"])
+                        filteredDf = data.filterByImpliedVolatility(filteredDf, minIV=filters["minImpliedVolatility"])
                     if filters.get("maxImpliedVolatility") is not None:
-                        filteredDf = get_options_data.filterByImpliedVolatility(filteredDf, maxIV=filters["maxImpliedVolatility"])
+                        filteredDf = data.filterByImpliedVolatility(filteredDf, maxIV=filters["maxImpliedVolatility"])
                     if itmOnly is not None:
-                        filteredDf = get_options_data.filterInTheMoney(filteredDf, itmOnly=itmOnly)
+                        filteredDf = data.filterInTheMoney(filteredDf, itmOnly=itmOnly)
                 
                 result[key] = filteredDf
             return result
@@ -355,12 +352,12 @@ def routeCommand(commandString: str) -> str:
                     if atmCharacteristic.get("tolerance"): 
                         nearStrikeArgs["tolerance"] = atmCharacteristic["tolerance"]
                     
-                    atmDf = get_options_data.getOptionsNearStrike(**nearStrikeArgs)
+                    atmDf = data.getOptionsNearStrike(**nearStrikeArgs)
                 result[key] = atmDf
             return result
 
         # Resume getOptionChain logic
-        optionChain = get_options_data.getOptionChain(ticker, optionType=contractType, expiration=expirationDate)
+        optionChain = data.getOptionChain(ticker, optionType=contractType, expiration=expirationDate)
         filteredChain = _applyFiltersToChain(optionChain)
         filteredChain = _applyATMCharacteristicToChain(filteredChain)
         
@@ -390,14 +387,14 @@ def routeCommand(commandString: str) -> str:
 
         # Map string to Enum
         if periodArg.lower() == "quarterly":
-            period = get_financial_statement.StatementPeriod.QUARTERLY
+            period = data.StatementPeriod.QUARTERLY
         elif periodArg.lower() == "annual":
-            period = get_financial_statement.StatementPeriod.ANNUAL
+            period = data.StatementPeriod.ANNUAL
         else:
             return _formatMcpResponse(None, error="getFinancialStatements expects a period of 'quarterly' or 'annual'")
 
-        metrics = get_financial_statement.extractKeyMetrics(ticker, period=period)
-        statements = get_financial_statement.getAllStatements(ticker, period=period)
+        metrics = data.extractKeyMetrics(ticker, period=period)
+        statements = data.getAllStatements(ticker, period=period)
 
         signals = {}
         if latestReport:
@@ -466,13 +463,13 @@ def routeCommand(commandString: str) -> str:
         requestedProperties = params.get("properties")
         
         if contractTypeArg and contractTypeArg.lower() == "call":
-            optionType = get_options_data.OptionType.CALL
+            optionType = data.OptionType.CALL
         elif contractTypeArg and contractTypeArg.lower() == "put":
-            optionType = get_options_data.OptionType.PUT
+            optionType = data.OptionType.PUT
         else:
-            optionType = get_options_data.OptionType.BOTH
+            optionType = data.OptionType.BOTH
         
-        fullChain = get_options_data.getOptionChain(ticker, expiration=expirationDate, optionType=optionType)
+        fullChain = data.getOptionChain(ticker, expiration=expirationDate, optionType=optionType)
         
         # Calculate time to expiration for Greeks
         today = datetime.now()
@@ -480,7 +477,7 @@ def routeCommand(commandString: str) -> str:
         timeToExpirationYears = max(1e-6, (expiryDate - today).total_seconds() / (365 * 24 * 3600))
         
         # Get current spot price for Greeks
-        stockPrice = get_stock_price.getCurrentPrice(ticker)
+        stockPrice = data.getCurrentPrice(ticker)
         
         contractsList = {}
         
@@ -502,8 +499,8 @@ def routeCommand(commandString: str) -> str:
                 ivs = matchedContracts['impliedVolatility'].values
                 
                 # vectorized calculation for efficiency
-                gammas = calculate_gamma_delta.calculateGamma(stockPrice, strikes, timeToExpirationYears, ivs)
-                deltas = calculate_gamma_delta.calculateDelta(stockPrice, strikes, timeToExpirationYears, ivs, 'call' if chainType == 'calls' else 'put')
+                gammas = analysis.calculateGamma(stockPrice, strikes, timeToExpirationYears, ivs)
+                deltas = analysis.calculateDelta(stockPrice, strikes, timeToExpirationYears, ivs, 'call' if chainType == 'calls' else 'put')
                 
                 matchedContracts['gamma'] = gammas
                 matchedContracts['delta'] = deltas

@@ -10,7 +10,7 @@ import pandas as pd
 import numpy as np
 from typing import List, Dict, Optional, Tuple
 from enum import Enum
-from get_stock_price import getHistoricalPrices, getHistoricalPricesBulk, PricePeriod, PriceInterval
+from .get_stock_price import getHistoricalPrices, getHistoricalPricesBulk, PricePeriod, PriceInterval
 
 
 class IndicatorType(Enum):

@@ -1,8 +1,7 @@
 import numpy as np
 import pandas as pd
-from get_options_data import getOptionChain, getOptionExpirations
-from get_stock_price import getCurrentPrice
-from calculate_gamma_delta import calculateGamma
+from core.data import getOptionChain, getOptionExpirations, getCurrentPrice
+from core.analysis import calculateGamma
 from datetime import datetime
 import argparse
 import sys

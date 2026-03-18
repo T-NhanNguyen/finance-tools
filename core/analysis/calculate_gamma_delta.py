@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.stats import norm
 from typing import Union, List, Dict
-from calculate_risk_free_rate import getRiskFreeRate
+from .calculate_risk_free_rate import getRiskFreeRate
 
 # Constants
 DAYS_IN_YEAR = 365.0

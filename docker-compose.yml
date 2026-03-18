@@ -7,6 +7,7 @@ services:
       - /app/node_modules
     environment:
       - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app
     extra_hosts:
       - "host.docker.internal:host-gateway"
     stdin_open: true
@@ -15,7 +16,7 @@ services:
   api-server:
     image: finance-api:latest
     build: .
-    command: python api_server.py
+    command: python -m api.api_server
     ports:
       - "8000:8000"
     volumes:
@@ -23,5 +24,6 @@ services:
       - /app/node_modules
     environment:
       - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app
     extra_hosts:
       - "host.docker.internal:host-gateway"

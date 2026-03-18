@@ -7,8 +7,8 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, List
 
-from api_types import GEXRequest, IndicatorsRequest, GEXResponse, IndicatorsResponse, ErrorResponse
-from api_handlers import getGEXData, getIndicatorsData
+from .api_types import GEXRequest, IndicatorsRequest, GEXResponse, IndicatorsResponse, ErrorResponse
+from .api_handlers import getGEXData, getIndicatorsData
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -151,7 +151,7 @@ async def postIndicators(request: IndicatorsRequest):
 if __name__ == "__main__":
     import uvicorn # not compatible with vercel. moved here for local run
     uvicorn.run(
-        "api_server:app",
+        "api.api_server:app",
         host="0.0.0.0",
         port=8000,
         reload=True,  # Auto-reload on code changes (disable in production)

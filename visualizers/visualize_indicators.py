@@ -1,11 +1,10 @@
 import pandas as pd
 import numpy as np
-from get_technical_indicator import (
+from core.data import (
     getIndicators, IndicatorType, generateTradingSignals, 
-    calculateTheilSenSlope, MINIMUM_SEGMENT_LENGTH, INITIAL_INDEX_OFFSET,
-    _getPiecewiseBoundaries
+    calculateTheilSenSlope, MINIMUM_SEGMENT_LENGTH, _getPiecewiseBoundaries,
+    PricePeriod, PriceInterval, getHistoricalPrices
 )
-from get_stock_price import PricePeriod, PriceInterval, getHistoricalPrices
 
 # sensitivity ratio: what % of ADV must a slope exceed to be 'Rising' or 'Falling'?
 SLOPE_SENSITIVITY_RATIO = 0.03

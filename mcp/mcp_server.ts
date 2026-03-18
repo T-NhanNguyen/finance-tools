@@ -193,7 +193,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // The mcp.py translation layer will handle lowercase 'true'/'false'/'null' within pythonArgs.
         // Run the python script directly. We assume mcp.py is in the same directory.
         // We use double quotes for the outer shell command to avoid issues with internal nested quotes.
-        const { stdout, stderr } = await execAsync(`python mcp.py "${pythonCmd}"`);
+        const { stdout, stderr } = await execAsync(`python mcp/mcp.py "${pythonCmd}"`);
 
         if (stderr && stderr.trim()) {
             // Some libraries write to stderr even on success, so we check if stdout is empty
