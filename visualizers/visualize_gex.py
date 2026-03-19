@@ -38,10 +38,13 @@ def parse_flexible_date(ticker, date_str):
         return expirations[0]
 
     # Try parsing common formats like M/D/YY, M/D/YYYY, etc.
+    parsed_dt_obj = None
     for fmt in ("%m/%d/%y", "%m-%d-%y", "%m/%d/%Y", "%m-%d-%Y", "%Y-%m-%d"):
         try:
-            parsed_dt = datetime.strptime(date_str, fmt)
-            normalized = parsed_dt.strftime("%Y-%m-%d")
+            dt = datetime.strptime(date_str, fmt)
+            normalized = dt.strftime("%Y-%m-%d")
+            if not parsed_dt_obj:
+                parsed_dt_obj = dt
             if normalized in expirations:
                 return normalized
         except ValueError:
@@ -60,6 +63,11 @@ def parse_flexible_date(ticker, date_str):
         return matches[0]
 
     # Fallback to nearest
+    if parsed_dt_obj:
+        # Find the expiration date closest to the parsed date
+        closest_date = min(expirations, key=lambda e: abs((datetime.strptime(e, "%Y-%m-%d") - parsed_dt_obj).total_seconds()))
+        return closest_date
+
     today = datetime.now().strftime("%Y-%m-%d")
     future_exps = [e for e in expirations if e >= today]
     return future_exps[0] if future_exps else expirations[0]

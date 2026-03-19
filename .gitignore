@@ -11,6 +11,7 @@ npm-debug.log*
 visualizer/*.png
 visualizer/*.html
 test/
+.gex_cache/
 
 # OS
 .DS_Store

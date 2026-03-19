@@ -12,14 +12,15 @@ Contains:
 from typing import List, Dict, Optional
 import pandas as pd
 
-from api.api_handlers import getGEXData
+from core.data.bulk_data_loader import fetch_gex_single
 from core.strategies.strategy_config import (
     CASH_W_DENSITY, CASH_W_FLOOR, CASH_W_EFF,
     WHEEL_W_EFF, WHEEL_W_DENSITY, WHEEL_W_FLOOR,
     VELOCITY_EXPANSION, VELOCITY_COMPRESSION, SKEW_ADJUSTMENT,
     TOP_N_PILLARS, INITIAL_MARGIN_REQ, MAINTENANCE_MARGIN_REQ,
-    SAFETY_MARGIN_THRESHOLD
+    LENDERS, MARGIN_RATIO, MARGIN_REQS, DEFAULT_MARGIN_REQ
 )
+from core.analysis.csp_math_engine import calculate_option_metrics
 
 
 class ContractSellingAnalyst:
@@ -50,46 +51,48 @@ class ContractSellingAnalyst:
         gex_value: float,
         oi_value: float,
         atm_weekly_premium: float,
-        strategy_type: str = "CSP"
+        strategy_type: str = "CSP",
+        initial_req: Optional[float] = None,
+        maintenance_req: Optional[float] = None
     ) -> Dict:
         """
         Function 1: The 'Data Scientist'
         Performs the complete breakdown of a single contract scenario.
         """
-        # 1. THE INTRINSIC/EXTRINSIC CORRECTION
-        if strategy_type.upper() == "CSP":
-            intrinsic_value = max(0, strike - underlying_price)
-        else: # CC
-            intrinsic_value = max(0, underlying_price - strike)
-        extrinsic_premium = premium - intrinsic_value
+        init_req = initial_req if initial_req is not None else self.initial_req
+        maint_req = maintenance_req if maintenance_req is not None else self.maintenance_req
+
+        metrics = calculate_option_metrics(
+            strike=strike,
+            premium=premium,
+            underlying_price=underlying_price,
+            days_to_expiry=days_to_expiry,
+            gex_value=gex_value,
+            oi_value=oi_value,
+            strategy_type=strategy_type,
+            total_working_capital=self.total_working_capital,
+            cash_equity=self.cash_equity,
+            margin_loan=self.margin_loan,
+            init_req=init_req,
+            maint_req=maint_req
+        )
         
-        # 2. CAPITAL & POSITION CALCULATIONS
-        shares_assigned = self.total_working_capital / strike if strike > 0 else 0
-        contracts = shares_assigned / 100
-        
-        # 3. TRUE YIELD (Using Extrinsic Only)
-        trade_roi_true = (extrinsic_premium / (strike * self.initial_req)) * 100 if strike > 0 else 0
-        annual_cycles = 365 / days_to_expiry if days_to_expiry > 0 else 365
-        eoy_projection_compounded = ((1 + (trade_roi_true/100))**annual_cycles - 1) * 100
-        
-        # 4. SAFETY & MARGIN CALL FLOOR (No absolute value)
-        margin_call_floor = self.margin_loan / (shares_assigned * (1 - self.maintenance_req)) if shares_assigned > 0 else 0
-        safety_margin_float = (underlying_price - strike) / underlying_price if underlying_price > 0 else 0
-        safety_margin = safety_margin_float * 100
-        
-        # Determine Strategy Category
-        strategy_tag = "Cash Engine" if safety_margin_float >= SAFETY_MARGIN_THRESHOLD else "Wheel Engine"
-        
-        # 5. STRUCTURAL & EFFICIENCY METRICS
-        prem_yield = extrinsic_premium / underlying_price if underlying_price > 0 else 0
-        efficiency_score = prem_yield / (max(0.001, safety_margin_float) if safety_margin_float > 0 else 0.001)
-        
-        structural_score = abs(gex_value * oi_value)
-        eff_cost_basis = strike - premium
-        
-        # CapEff is now based purely on extrinsic yield vs normalized risk floor
-        risk_divisor = max(SAFETY_MARGIN_THRESHOLD, safety_margin_float) if strategy_tag == "Cash Engine" else SAFETY_MARGIN_THRESHOLD
-        capital_efficiency_ratio = trade_roi_true / risk_divisor
+        # Unpack commonly used variables for backward compatibility
+        extrinsic_premium = metrics["extrinsic_premium"]
+        contracts = metrics["contracts"]
+        shares_assigned = metrics["shares_assigned"]
+        trade_roi_true = metrics["trade_roi_true"]
+        trade_roi_net = metrics["trade_roi_net"]
+        trade_roi_post_tax = metrics["trade_roi_post_tax"]
+        eoy_projection_compounded = metrics["eoy_projection_compounded"]
+        margin_call_floor = metrics["margin_call_floor"]
+        safety_margin_float = metrics["safety_margin_float"]
+        safety_margin = metrics["safety_margin"]
+        strategy_tag = metrics["strategy_tag"]
+        efficiency_score = metrics["efficiency_score"]
+        structural_score = metrics["structural_score"]
+        eff_cost_basis = metrics["eff_cost_basis"]
+        capital_efficiency_ratio = metrics["capital_efficiency_ratio"]
 
         # === Refined Repair Velocity Logic (CC Proxy) ===
         velocity_factor = 1.0
@@ -108,8 +111,10 @@ class ContractSellingAnalyst:
             "strategy_tag": strategy_tag,
             "premium": premium,
             "premium_extrinsic": round(extrinsic_premium, 2),
-            "contracts": round(contracts, 2),
+            "contracts": contracts,
             "trade_roi_pct": round(trade_roi_true, 2),
+            "trade_roi_net_pct": round(trade_roi_net, 2),
+            "trade_roi_post_tax_pct": round(trade_roi_post_tax, 2),
             "eoy_projection_pct": round(eoy_projection_compounded, 2),
             "margin_call_floor": round(margin_call_floor, 2),
             "safety_margin_pct": round(safety_margin, 2),
@@ -118,7 +123,8 @@ class ContractSellingAnalyst:
             "capital_efficiency_ratio": round(capital_efficiency_ratio, 4),
             "weeks_to_zero": round(weeks_to_zero, 1),
             "eff_cost_basis": round(eff_cost_basis, 2),
-            "predicted_p_call": round(predicted_p_call, 2)
+            "predicted_p_call": round(predicted_p_call, 2),
+            "capital_deployed": round(strike * 100 * contracts * init_req, 2)
         }
 
     def get_actionable_pillars(self, analyzed_list: List[Dict], engine_mode: str = "BOTH") -> Dict[str, List[Dict]]:
@@ -167,11 +173,16 @@ class ContractSellingAnalyst:
                        "Floor_P_call": p['margin_call_floor'],
                        "Safety_Buffer": f"{p['safety_margin_pct']}%",
                        "Trade_ROI": f"{p['trade_roi_pct']}%",
+                       "Net_ROI": f"{p['trade_roi_net_pct']}%",
+                       "Post_Tax_ROI": f"{p['trade_roi_post_tax_pct']}%",
                        "WTZ_Weeks": p['weeks_to_zero'],
                        "Cap_Efficiency": p.get('capital_efficiency_ratio', 0),
                        "Extrinsic_Premium": p.get('premium_extrinsic'),
                        "Total_Premium": round(p['premium'] * 100 * p['contracts'], 2),
-                       "Eff_Cost_Basis": p['eff_cost_basis']
+                       "Eff_Cost_Basis": p['eff_cost_basis'],
+                       "Contracts": p.get('contracts', 0),
+                       "Capital_Deployed": p.get('capital_deployed', 0),
+                       "Premium_Raw": p.get('premium', 0)
                   })
              return pillars_scored
 
@@ -200,7 +211,7 @@ class ContractSellingAnalyst:
         Runs complete scanner pipeline.
         Calls GEX data endpoints and extracts actionable benchmarks.
         """
-        data = getGEXData(ticker, expiration_input)
+        data = fetch_gex_single(ticker, expiration_input)
         if "error" in data:
             return data
             
@@ -213,7 +224,7 @@ class ContractSellingAnalyst:
         if expiration_input is None:
             nearest_data = data
         else:
-            nearest_data = getGEXData(ticker, None)
+            nearest_data = fetch_gex_single(ticker, None)
             if "error" in nearest_data:
                 nearest_data = data  # Fallback to current if nearest fails
                 
@@ -231,7 +242,17 @@ class ContractSellingAnalyst:
             if nearest_strikes:
                  atm_weekly_premium = nearest_strikes[0].get('putBid', 1.0) or 1.0
             else:
-                 atm_weekly_premium = 1.0             
+                 atm_weekly_premium = 1.0                     # Dynamic Margin Requirements Lookup
+        margin_info = MARGIN_REQS.get(ticker.upper(), MARGIN_REQS.get("DEFAULT", {}))
+        if strategy_type.upper() == "CSP":
+            fallback_maint = DEFAULT_MARGIN_REQ * 0.90
+            init_req = margin_info.get("initial_short", DEFAULT_MARGIN_REQ)
+            maint_req = margin_info.get("maint_short", fallback_maint)
+        else: # CC
+            fallback_maint = DEFAULT_MARGIN_REQ * 0.90
+            init_req = margin_info.get("initial_long", DEFAULT_MARGIN_REQ)
+            maint_req = margin_info.get("maint_long", fallback_maint)
+
         analyzed_results = []
         for s_data in strikes:
              strike = s_data['strike']
@@ -255,7 +276,9 @@ class ContractSellingAnalyst:
                  gex_value=gex_raw,
                  oi_value=oi_raw,
                  atm_weekly_premium=atm_weekly_premium,
-                 strategy_type=strategy_type
+                 strategy_type=strategy_type,
+                 initial_req=init_req,
+                 maintenance_req=maint_req
              )
              analyzed_results.append(res)
         
@@ -272,7 +295,7 @@ class ContractSellingAnalyst:
         }
 
 
-if __name__ == "__main__":
+def run_scanner():
     import argparse
     parser = argparse.ArgumentParser(description="Scan multiple tickers for option selling pillars.")
     parser.add_argument("tickers", nargs="*", help="List of tickers (e.g., SPY QQQ AAPL)")
@@ -282,13 +305,27 @@ if __name__ == "__main__":
     
     tickers = args.tickers if args.tickers else ["ASTS", "QQQ", "RKLB", "NBIS"]
     
-    analyst = ContractSellingAnalyst(cash_equity=100000, margin_loan=80000)
-    print(f"Working Capital: ${analyst.total_working_capital:,.2f} (${analyst.cash_equity/1000:.0f}k Cash + ${analyst.margin_loan/1000:.0f}k Margin)")
+    cash_equity = sum(LENDERS)
+    margin_loan = cash_equity * MARGIN_RATIO
+    analyst = ContractSellingAnalyst(cash_equity=cash_equity, margin_loan=margin_loan)
+    print(f"Working Capital: ${analyst.total_working_capital:,.2f} (${analyst.cash_equity/1000:.0f}k Cash + ${analyst.margin_loan/1000:.0f}k Margin Expansion)")
     print(f"Strategy: {args.strategy.upper()} | Engine Mode: {args.engine.upper()}")
     
-    for t in tickers:
+    from concurrent.futures import ThreadPoolExecutor
+    def process_ticker(t):
         try:
-             res = analyst.scan(t.upper(), strategy_type=args.strategy, engine_mode=args.engine)
+             return t, analyst.scan(t.upper(), strategy_type=args.strategy, engine_mode=args.engine)
+        except Exception as e:
+             return t, {"error": str(e)}
+
+    collected_results = []
+    with ThreadPoolExecutor(max_workers=4) as executor:
+         future_to_ticker = {executor.submit(process_ticker, t): t for t in tickers}
+         for future in future_to_ticker:
+              collected_results.append(future.result())
+
+    for t, res in collected_results:
+        try:
              if "error" in res:
                  print(f"\nScanning {t.upper()}... Error: {res['error']}")
                  continue
@@ -301,7 +338,12 @@ if __name__ == "__main__":
                  print(f"\n[{engine.replace('_', ' ')}]")
                  for p in p_list:
                       print(f"  Rank {p['Rank']}: Strike ${p['Strike']:.2f} | Score: {p['Pillar_Score']:.4f} | WTZ: {p['WTZ_Weeks']} Weeks")
-                      print(f"    -> Price Flow: [Cost Basis: ${p['Eff_Cost_Basis']:.2f}] <- [Margin: ${p['Floor_P_call']:.2f}]")
-                      print(f"    -> Extrinsic: ${p.get('Extrinsic_Premium', 0):.2f} | Total Prem: ${p['Total_Premium']:,.2f} | CapEff: {p['Cap_Efficiency']:.4f}\n")
+                      print(f"    -> Price Flow: [Cost Basis: ${p['Eff_Cost_Basis']:.2f}] <- [Margin Price floor: ${p['Floor_P_call']:.2f}]")
+                      print(f"    -> ROI: {p['Trade_ROI']} ({p['Post_Tax_ROI']} Net Post-Tax)")
+                      print(f"    -> Premium: ${p['Premium_Raw']:.2f} | Total Prem: ${p['Total_Premium']:,.2f} ({p['Contracts']} Contracts)")
+                      print(f"    -> Capital Deployed: ${p['Capital_Deployed']:,.2f} | CapEff: {p['Cap_Efficiency']:.4f}\n")
         except Exception as e:
              print(f"Unexpected Exception for {t}: {e}")
+
+if __name__ == "__main__":
+    run_scanner()

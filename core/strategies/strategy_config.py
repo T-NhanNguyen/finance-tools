@@ -2,6 +2,91 @@
 Strategy Configuration Parameters
 """
 
+# config.py
+"""
+Hardcoded scenario variables, lender profiles, and tax configurations.
+Edit this file to model different scenarios without touching the core logic.
+
+All values in this file are for the DEFAULT scenario. Override them in main.py
+as needed for alternative scenarios.
+"""
+
+# ===========================================================
+# LENDER PROFILES
+# Loan amounts from individual lenders (in USD).
+# The sum becomes your total working capital (P_0).
+# ===========================================================
+LENDERS = [
+    100_000,   # Lender 1
+    20_000,   # Lender 2
+]
+
+# Annual interest rate on all loans (flat rate applied to total principal).
+# e.g. 0.06 = 6% annual interest
+LOAN_RATE = 0.06
+
+# Broker margin terms
+MARGIN_RATIO = 0.6  # 60% Buying Power Expansion
+MARGIN_RATE = 0.08  # 8% Annual margin interest
+
+# Month (k) at which the total interest obligation is paid out to lenders.
+# e.g. 12 = pay at end of year
+INTEREST_MONTH_K = 1
+
+# Total duration of the strategy in months.
+MONTHS_T = 3
+
+
+# ===========================================================
+# STRATEGY ENGINE
+# ===========================================================
+
+# Target quarterly return (every 3 months).
+# e.g. 0.20 = 20% every 3 months
+TARGET_QUARTERLY_RETURN = 0.20
+
+# If True, use compound (geometric) monthly rate: r_m = (1 + R_3m)^(1/3) - 1
+# If False, use simple monthly rate:               r_m = R_3m / 3
+COMPOUND_GAINS = True
+
+
+# ===========================================================
+# TAX PROFILE  (Washington State — No State Income Tax)
+# ===========================================================
+
+# Federal income tax bracket.
+# Common brackets: 0.22, 0.24, 0.32, 0.35, 0.37
+FEDERAL_TAX_BRACKET = 0.24
+
+# Net Investment Income Tax — applies at 3.8% if income exceeds IRS thresholds.
+# True = add 3.8%; False = exempt
+APPLIES_NIIT = False
+
+
+# ===========================================================
+# OPTIONS SCANNER
+# ===========================================================
+
+# Comprehensive broker margin requirements per ticker
+MARGIN_REQS = {
+    "MP": {"initial_long": 0.2806, "maint_long": 0.2551, "initial_short": 0.30, "maint_short": 0.30},
+    "UUUU": {"initial_long": 0.3012, "maint_long": 0.2739, "initial_short": 0.3012, "maint_short": 0.30},
+    "ASTS": {"initial_long": 0.4319, "maint_long": 0.3927, "initial_short": 0.4319, "maint_short": 0.3927},
+    "TSLA": {"initial_long": 0.3653, "maint_long": 0.3200, "initial_short": 0.30, "maint_short": 0.30},
+    "SPXL": {"initial_long": 0.75, "maint_long": 0.75, "initial_short": 0.90, "maint_short": 0.90},
+    "NVDA": {"initial_long": 0.25, "maint_long": 0.25, "initial_short": 0.30, "maint_short": 0.30},
+    "NBIS": {"initial_long": 0.3069, "maint_long": 0.2790, "initial_short": 0.3069, "maint_short": 0.30},
+    "NEBX": {"initial_long": 0.30, "maint_long": 0.30, "initial_short": 0.30, "maint_short": 0.30},
+    "BE": {"initial_long": 0.3069, "maint_long": 0.2790, "initial_short": 0.3069, "maint_short": 0.30}
+}
+# Default margin requirement if a ticker is missing from the dictionary
+DEFAULT_MARGIN_REQ = 0.50
+
+# Minimum premium-to-underlying yield required to qualify a trade (the "2% rule").
+# e.g. 0.02 = 2%
+MIN_YIELD_THRESHOLD = 0.02
+
+
 # Cash Engine Weights (Prioritizes Safety and GEX Structure)
 CASH_W_DENSITY = 0.50
 CASH_W_FLOOR   = 0.30
