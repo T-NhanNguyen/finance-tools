@@ -36,26 +36,33 @@ def calculate_option_metrics(
     extrinsic_premium = premium - intrinsic_value
     
     # 2. CAPITAL & POSITION CALCULATIONS
-    shares_assigned_float = total_working_capital / (strike * init_req) if strike > 0 and init_req > 0 else 0
+    target_capital = cash_equity if strategy_type.upper() == "CSP" else total_working_capital
+    shares_assigned_float = target_capital / strike if strike > 0 else 0
     contracts = int(shares_assigned_float / 100)
     shares_assigned = contracts * 100
     
+    # Use init_req=1.0 for true Cash-Secured position framing inside ROI/Carry Calculations
+    trade_init_req = 1.0 if strategy_type.upper() == "CSP" else init_req
+
     # 3. YIELD & CARRY SPREAD / TAX OVERLAYS
     effective_tax_rate = FEDERAL_TAX_BRACKET + (0.038 if APPLIES_NIIT else 0)
-    annual_capital_cost = (cash_equity * LOAN_RATE) + (margin_loan * MARGIN_RATE)
-    holding_period_cost = annual_capital_cost * (days_to_expiry / 365)
+    
+    # Weighted Average Cost of Capital (WACC) to allocate carry costs proportionally
+    total_cap = cash_equity + margin_loan
+    wacc = ((cash_equity * LOAN_RATE) + (margin_loan * MARGIN_RATE)) / total_cap if total_cap > 0 else 0
+    holding_period_cost = (strike * trade_init_req) * wacc * (days_to_expiry / 365)
     
     net_extrinsic_premium = extrinsic_premium - holding_period_cost
     
-    trade_roi_true = (extrinsic_premium / (strike * init_req)) * 100 if strike > 0 else 0
-    trade_roi_net = (net_extrinsic_premium / (strike * init_req)) * 100 if strike > 0 else 0
+    trade_roi_true = (extrinsic_premium / (strike * trade_init_req)) * 100 if strike > 0 else 0
+    trade_roi_net = (net_extrinsic_premium / (strike * trade_init_req)) * 100 if strike > 0 else 0
     trade_roi_post_tax = trade_roi_net * (1 - effective_tax_rate)
     
     annual_cycles = 365 / days_to_expiry if days_to_expiry > 0 else 365
     eoy_projection_compounded = ((1 + (trade_roi_true/100))**annual_cycles - 1) * 100
     
     # 4. SAFETY & MARGIN CALL FLOOR (No absolute value)
-    margin_call_floor = margin_loan / (shares_assigned * (1 - maint_req)) if shares_assigned > 0 else 0
+    margin_call_floor = margin_loan / (shares_assigned * (1 - maint_req)) if shares_assigned > 0 and (1 - maint_req) > 0 else 0
     safety_margin_float = (underlying_price - strike) / underlying_price if underlying_price > 0 else 0
     safety_margin = safety_margin_float * 100
     

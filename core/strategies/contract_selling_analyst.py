@@ -301,6 +301,7 @@ def run_scanner():
     parser.add_argument("tickers", nargs="*", help="List of tickers (e.g., SPY QQQ AAPL)")
     parser.add_argument("--strategy", choices=["CSP", "CC"], default="CSP", help="Strategy type: CSP or CC")
     parser.add_argument("--engine", choices=["BOTH", "CASH", "WHEEL"], default="BOTH", help="Engine filter mode")
+    parser.add_argument("--expiration", help="Expiration date (YYYY-MM-DD, partial string, or index)")
     args = parser.parse_args()
     
     tickers = args.tickers if args.tickers else ["ASTS", "QQQ", "RKLB", "NBIS"]
@@ -314,7 +315,7 @@ def run_scanner():
     from concurrent.futures import ThreadPoolExecutor
     def process_ticker(t):
         try:
-             return t, analyst.scan(t.upper(), strategy_type=args.strategy, engine_mode=args.engine)
+             return t, analyst.scan(t.upper(), expiration_input=args.expiration, strategy_type=args.strategy, engine_mode=args.engine)
         except Exception as e:
              return t, {"error": str(e)}
 
