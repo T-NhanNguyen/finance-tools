@@ -74,10 +74,19 @@ MARGIN_REQS = {
     "TSLA": {"initial_long": 0.3653, "maint_long": 0.3200, "initial_short": 0.30, "maint_short": 0.30},
     "SPXL": {"initial_long": 0.75, "maint_long": 0.75, "initial_short": 0.90, "maint_short": 0.90},
     "NVDA": {"initial_long": 0.25, "maint_long": 0.25, "initial_short": 0.30, "maint_short": 0.30},
-    "NBIS": {"initial_long": 0.3069, "maint_long": 0.2790, "initial_short": 0.3069, "maint_short": 0.30},
+    "NBIS": {"initial_long": 0.3162, "maint_long": 0.2875, "initial_short": 0.3162, "maint_short": 0.30},
     "NEBX": {"initial_long": 0.30, "maint_long": 0.30, "initial_short": 0.30, "maint_short": 0.30},
+    "IREN": {"initial_long": 0.3962, "maint_long": 0.3602, "initial_short": 0.3962, "maint_short": 0.3602},
     "BE": {"initial_long": 0.3069, "maint_long": 0.2790, "initial_short": 0.3069, "maint_short": 0.30},
-    "AAOI": {"initial_long": 0.7167, "maint_long": 0.4809, "initial_short": 0.5289, "maint_short": 0.4809}
+    "WULF": {"initial_long": 0.4202, "maint_long": 0.3822, "initial_short": 0.4202, "maint_short": 0.3822},
+    "AAOI": {"initial_long": 0.7167, "maint_long": 0.4809, "initial_short": 0.5289, "maint_short": 0.4809},
+    "PLTR": {"initial_long": 0.2500, "maint_long": 0.2500, "initial_short": 0.3000, "maint_short": 0.3000},
+    "ONDS": {"initial_long": 0.4509, "maint_long": 0.4099, "initial_short": 0.4970, "maint_short": 0.4970},
+    "BWXT": {"initial_long": 0.2500, "maint_long": 0.2500, "initial_short": 0.3000, "maint_short": 0.3000},
+    "NOK": {"initial_long": 0.2500, "maint_long": 0.2500, "initial_short": 0.6266, "maint_short": 0.6266},
+    "SOFI": {"initial_long": 0.2500, "maint_long": 0.2500, "initial_short": 0.3000, "maint_short": 0.3000},
+    "HIMS": {"initial_long": 0.3526, "maint_long": 0.3206, "initial_short": 0.3526, "maint_short": 0.3206},
+    "AAPL": {"initial_long": 0.2500, "maint_long": 0.2500, "initial_short": 0.3000, "maint_short": 0.3000}
 }
 # Default margin requirement if a ticker is missing from the dictionary
 DEFAULT_MARGIN_REQ = 0.50
