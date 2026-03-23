@@ -124,7 +124,7 @@ class ContractSellingAnalyst:
             "weeks_to_zero": round(weeks_to_zero, 1),
             "eff_cost_basis": round(eff_cost_basis, 2),
             "predicted_p_call": round(predicted_p_call, 2),
-            "capital_deployed": round(strike * 100 * contracts * init_req, 2)
+            "capital_deployed": round(strike * 100 * contracts, 2)
         }
 
     def get_actionable_pillars(self, analyzed_list: List[Dict], engine_mode: str = "BOTH") -> Dict[str, List[Dict]]:
@@ -233,25 +233,31 @@ class ContractSellingAnalyst:
             # Sort by proximity to spot
             sorted_nearest = sorted(nearest_strikes, key=lambda x: abs(x['strike'] - spot_price))
             atm_strike_data = sorted_nearest[0]
-            atm_weekly_premium = (atm_strike_data['putBid'] + atm_strike_data['putAsk']) / 2
+            if strategy_type.upper() == "CSP":
+                atm_weekly_premium = (atm_strike_data.get('putBid', 0) + atm_strike_data.get('putAsk', 0)) / 2
+            else:
+                atm_weekly_premium = (atm_strike_data.get('callBid', 0) + atm_strike_data.get('callAsk', 0)) / 2
         else:
             atm_weekly_premium = 0.0
             
         if atm_weekly_premium <= 0:
-            # Absolute fallback from first available Put Bid in nearest chain
+            # Absolute fallback from first available Bid in nearest chain
             if nearest_strikes:
-                 atm_weekly_premium = nearest_strikes[0].get('putBid', 1.0) or 1.0
+                 fallback_key = 'putBid' if strategy_type.upper() == "CSP" else 'callBid'
+                 atm_weekly_premium = nearest_strikes[0].get(fallback_key, 1.0) or 1.0
             else:
                  atm_weekly_premium = 1.0                     # Dynamic Margin Requirements Lookup
         margin_info = MARGIN_REQS.get(ticker.upper(), MARGIN_REQS.get("DEFAULT", {}))
         if strategy_type.upper() == "CSP":
             fallback_maint = DEFAULT_MARGIN_REQ * 0.90
-            init_req = margin_info.get("initial_short", DEFAULT_MARGIN_REQ)
-            maint_req = margin_info.get("maint_short", fallback_maint)
-        else: # CC
-            fallback_maint = DEFAULT_MARGIN_REQ * 0.90
             init_req = margin_info.get("initial_long", DEFAULT_MARGIN_REQ)
             maint_req = margin_info.get("maint_long", fallback_maint)
+        else: # CC
+            fallback_maint = DEFAULT_MARGIN_REQ * 0.90
+            init_req = margin_info.get("initial_short", DEFAULT_MARGIN_REQ)
+            maint_req = margin_info.get("maint_short", fallback_maint) 
+
+        effective_capital = self.cash_equity / init_req if init_req > 0 else self.total_working_capital
 
         analyzed_results = []
         for s_data in strikes:
@@ -289,6 +295,9 @@ class ContractSellingAnalyst:
              "spot_price": spot_price,
              "strategy_type": strategy_type,
              "atm_premium_benchmark": atm_weekly_premium,
+             "effective_capital": effective_capital,
+             "init_req": init_req,
+             "maint_req": maint_req,
              "expiration": data.get("expiration"),
              "pillars": pillars,
              "all_strikes": analyzed_results
@@ -299,12 +308,12 @@ def run_scanner():
     import argparse
     parser = argparse.ArgumentParser(description="Scan multiple tickers for option selling pillars.")
     parser.add_argument("tickers", nargs="*", help="List of tickers (e.g., SPY QQQ AAPL)")
-    parser.add_argument("--strategy", choices=["CSP", "CC"], default="CSP", help="Strategy type: CSP or CC")
-    parser.add_argument("--engine", choices=["BOTH", "CASH", "WHEEL"], default="BOTH", help="Engine filter mode")
+    parser.add_argument("--strategy", type=str.upper, choices=["CSP", "CC"], default="CSP", help="Strategy type: CSP or CC")
+    parser.add_argument("--engine", type=str.upper, choices=["BOTH", "CASH", "WHEEL"], default="BOTH", help="Engine filter mode")
     parser.add_argument("--expiration", help="Expiration date (YYYY-MM-DD, partial string, or index)")
     args = parser.parse_args()
     
-    tickers = args.tickers if args.tickers else ["ASTS", "QQQ", "RKLB", "NBIS"]
+    tickers = [t.upper() for t in args.tickers] if args.tickers else ["ASTS", "QQQ", "RKLB", "NBIS"]
     
     cash_equity = sum(LENDERS)
     margin_loan = cash_equity * MARGIN_RATIO
@@ -332,17 +341,28 @@ def run_scanner():
                  continue
                  
              print(f"\n{'='*70}\nScanning {t.upper()} (Expiration Chain: {res.get('expiration')})\n{'='*70}")
-             print(f"Spot: ${res['spot_price']:.2f} | Benchmark Put Premium: ${res['atm_premium_benchmark']:.2f}")
+             is_cc = res.get("strategy_type", "CSP").upper() == "CC"
+             benchmark_label = "Call" if is_cc else "Put"
+             print(f"Spot: ${res['spot_price']:.2f} | Benchmark {benchmark_label} Premium: ${res['atm_premium_benchmark']:.2f}")
+             print(f"Effective Capital / BP: ${res['effective_capital']:,.2f} (Capped by {res.get('init_req', 0)*100:.1f}% Req)")
              print("-" * 70)
              
              for engine, p_list in res["pillars"].items():
                  print(f"\n[{engine.replace('_', ' ')}]")
                  for p in p_list:
                       print(f"  Rank {p['Rank']}: Strike ${p['Strike']:.2f} | Score: {p['Pillar_Score']:.4f} | WTZ: {p['WTZ_Weeks']} Weeks")
-                      print(f"    -> Price Flow: [Cost Basis: ${p['Eff_Cost_Basis']:.2f}] <- [Margin Price floor: ${p['Floor_P_call']:.2f}]")
-                      print(f"    -> ROI: {p['Trade_ROI']} ({p['Post_Tax_ROI']} Net Post-Tax)")
-                      print(f"    -> Premium: ${p['Premium_Raw']:.2f} | Total Prem: ${p['Total_Premium']:,.2f} ({p['Contracts']} Contracts)")
-                      print(f"    -> Capital Deployed: ${p['Capital_Deployed']:,.2f} | CapEff: {p['Cap_Efficiency']:.4f}\n")
+                      if is_cc:
+                          break_even = res['spot_price'] - p['Premium_Raw']
+                          shares_capital = res['spot_price'] * 100 * p['Contracts']
+                          print(f"    -> Price Flow: [Break-Even: ${break_even:.2f}] <- [Strike: ${p['Strike']:.2f}]")
+                          print(f"    -> ROI: {p['Trade_ROI']} ({p['Post_Tax_ROI']} Net Post-Tax)")
+                          print(f"    -> Premium: ${p['Premium_Raw']:.2f} | Total Prem: ${p['Total_Premium']:,.2f} ({p['Contracts']} Contracts)")
+                          print(f"    -> Capital Deployed (Shares): ${shares_capital:,.2f} | CapEff: {p['Cap_Efficiency']:.4f}\n")
+                      else:
+                          print(f"    -> Price Flow: [Cost Basis: ${p['Eff_Cost_Basis']:.2f}] <- [Margin Price floor: ${p['Floor_P_call']:.2f}]")
+                          print(f"    -> ROI: {p['Trade_ROI']} ({p['Post_Tax_ROI']} Net Post-Tax)")
+                          print(f"    -> Premium: ${p['Premium_Raw']:.2f} | Total Prem: ${p['Total_Premium']:,.2f} ({p['Contracts']} Contracts)")
+                          print(f"    -> Capital Deployed: ${p['Capital_Deployed']:,.2f} | CapEff: {p['Cap_Efficiency']:.4f}\n")
         except Exception as e:
              print(f"Unexpected Exception for {t}: {e}")
 

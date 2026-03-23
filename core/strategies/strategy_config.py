@@ -76,7 +76,8 @@ MARGIN_REQS = {
     "NVDA": {"initial_long": 0.25, "maint_long": 0.25, "initial_short": 0.30, "maint_short": 0.30},
     "NBIS": {"initial_long": 0.3069, "maint_long": 0.2790, "initial_short": 0.3069, "maint_short": 0.30},
     "NEBX": {"initial_long": 0.30, "maint_long": 0.30, "initial_short": 0.30, "maint_short": 0.30},
-    "BE": {"initial_long": 0.3069, "maint_long": 0.2790, "initial_short": 0.3069, "maint_short": 0.30}
+    "BE": {"initial_long": 0.3069, "maint_long": 0.2790, "initial_short": 0.3069, "maint_short": 0.30},
+    "AAOI": {"initial_long": 0.7167, "maint_long": 0.4809, "initial_short": 0.5289, "maint_short": 0.4809}
 }
 # Default margin requirement if a ticker is missing from the dictionary
 DEFAULT_MARGIN_REQ = 0.50
