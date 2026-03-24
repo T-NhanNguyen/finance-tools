@@ -7,7 +7,7 @@ Extracted from contract_selling_analyst.py
 
 from core.strategies.strategy_config import (
     FEDERAL_TAX_BRACKET, APPLIES_NIIT,
-    LOAN_RATE, MARGIN_RATE, SAFETY_MARGIN_THRESHOLD,
+    LOAN_RATE, MIN_MONEYNESS_PCT,
     SAFETY_BUFFER_TARGET
 )
 
@@ -76,8 +76,8 @@ def calculate_option_metrics(
     safety_margin_float = (underlying_price - strike) / underlying_price if underlying_price > 0 else 0
     safety_margin = safety_margin_float * 100
     
-    # Determine Strategy Category
-    strategy_tag = "Cash Engine" if safety_margin_float >= SAFETY_MARGIN_THRESHOLD else "Wheel Engine"
+    # Strategy Category is determined in get_actionable_pillars
+    strategy_tag = None
     
     # 5. STRUCTURAL & EFFICIENCY METRICS
     prem_yield = extrinsic_premium / underlying_price if underlying_price > 0 else 0
@@ -87,7 +87,7 @@ def calculate_option_metrics(
     eff_cost_basis = strike - premium
     
     # CapEff is now based purely on extrinsic yield vs normalized risk floor
-    risk_divisor = max(SAFETY_MARGIN_THRESHOLD, safety_margin_float) if strategy_tag == "Cash Engine" else SAFETY_MARGIN_THRESHOLD
+    risk_divisor = max(MIN_MONEYNESS_PCT, safety_margin_float)
     capital_efficiency_ratio = trade_roi_true / risk_divisor
 
     return {

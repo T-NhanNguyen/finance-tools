@@ -76,7 +76,7 @@ MARGIN_REQS = {
     "NBIS": {"initial_long": 0.3162, "maint_long": 0.2875, "initial_short": 0.3162, "maint_short": 0.30},
     "NEBX": {"initial_long": 0.30, "maint_long": 0.30, "initial_short": 0.30, "maint_short": 0.30},
     "IREN": {"initial_long": 0.3962, "maint_long": 0.3602, "initial_short": 0.3962, "maint_short": 0.3602},
-    "BE": {"initial_long": 0.3069, "maint_long": 0.2790, "initial_short": 0.3069, "maint_short": 0.30},
+    "BE": {"initial_long": 0.3650, "maint_long": 0.3318, "initial_short": 0.3650, "maint_short": 0.3318},
     "WULF": {"initial_long": 0.4202, "maint_long": 0.3822, "initial_short": 0.4202, "maint_short": 0.3822},
     "AAOI": {"initial_long": 0.7167, "maint_long": 0.4809, "initial_short": 0.5289, "maint_short": 0.4809},
     "PLTR": {"initial_long": 0.2500, "maint_long": 0.2500, "initial_short": 0.3000, "maint_short": 0.3000},
@@ -85,6 +85,7 @@ MARGIN_REQS = {
     "NOK": {"initial_long": 0.2500, "maint_long": 0.2500, "initial_short": 0.6266, "maint_short": 0.6266},
     "SOFI": {"initial_long": 0.2500, "maint_long": 0.2500, "initial_short": 0.3000, "maint_short": 0.3000},
     "HIMS": {"initial_long": 0.3526, "maint_long": 0.3206, "initial_short": 0.3526, "maint_short": 0.3206},
+    "RKLB": {"initial_long": 0.3282, "maint_long": 0.2984, "initial_short": 0.3282, "maint_short": 0.3000},
     "AAPL": {"initial_long": 0.2500, "maint_long": 0.2500, "initial_short": 0.3000, "maint_short": 0.3000}
 }
 # Default margin requirement if a ticker is missing from the dictionary
@@ -119,4 +120,5 @@ INITIAL_MARGIN_REQ = 0.20
 MAINTENANCE_MARGIN_REQ = 0.25
 
 # Safety & Moneyness thresholds
-SAFETY_MARGIN_THRESHOLD = 0.01  # 1% buffer to qualify as OTM Cash Engine vs ATM Wheel
+MIN_MONEYNESS_PCT = 0.02  # 2% floor to qualify for any engine (eliminates ATM pin risk)
+WHEEL_MONEYNESS_MAX = 0.05  # 5% ceiling for Wheel Engine, above is Cash Engine (separates income trading from wheel preparation)

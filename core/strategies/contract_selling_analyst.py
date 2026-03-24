@@ -19,8 +19,26 @@ from core.strategies.strategy_config import (
     VELOCITY_EXPANSION, VELOCITY_COMPRESSION, SKEW_ADJUSTMENT,
     TOP_N_PILLARS, INITIAL_MARGIN_REQ, MAINTENANCE_MARGIN_REQ,
     LENDERS, MARGIN_REQS, DEFAULT_MARGIN_REQ,
+    MIN_MONEYNESS_PCT, WHEEL_MONEYNESS_MAX
 )
 from core.analysis.csp_math_engine import calculate_option_metrics, calculate_cash_requirement
+
+
+def _extract_atm_premium(strikes: List[Dict], spot_price: float, strategy_type: str) -> float:
+    """Finds nearest-to-spot strike in a chain and returns its mid-market premium."""
+    if not strikes:
+        return 1.0
+    sorted_strikes = sorted(strikes, key=lambda x: abs(x['strike'] - spot_price))
+    atm = sorted_strikes[0]
+    if strategy_type.upper() == "CSP":
+        mid = (atm.get('putBid', 0) + atm.get('putAsk', 0)) / 2
+        fallback_key = 'putBid'
+    else:
+        mid = (atm.get('callBid', 0) + atm.get('callAsk', 0)) / 2
+        fallback_key = 'callBid'
+    if mid > 0:
+        return mid
+    return atm.get(fallback_key, 1.0) or 1.0
 
 
 class ContractSellingAnalyst:
@@ -98,7 +116,7 @@ class ContractSellingAnalyst:
         elif gex_value > 0:
             velocity_factor = VELOCITY_COMPRESSION
 
-        skew_adjusted_base = atm_weekly_premium * SKEW_ADJUSTMENT
+        skew_adjusted_base = premium * SKEW_ADJUSTMENT
         predicted_p_call = skew_adjusted_base * velocity_factor
 
         weeks_to_zero = eff_cost_basis / (predicted_p_call if predicted_p_call > 0 else 1)
@@ -128,9 +146,27 @@ class ContractSellingAnalyst:
         """
         Function 2: The 'Trader'
         Filters noise and ranks results into bifurcated Wheel & Cash mandates.
+        Tiered classification based on moneyness.
         """
         if not analyzed_list:
             return {"Top_Wheel_Engine": [], "Top_Cash_Engine": []}
+
+        # 0. Filter and Classify
+        filtered_list = []
+        for x in analyzed_list:
+            smf = x.get('safety_margin_pct', 0) / 100.0
+            if smf < MIN_MONEYNESS_PCT:
+                continue
+            elif smf <= WHEEL_MONEYNESS_MAX:
+                x['strategy_tag'] = "Wheel Engine"
+            else:
+                x['strategy_tag'] = "Cash Engine"
+            filtered_list.append(x)
+            
+        if not filtered_list:
+            return {"Top_Wheel_Engine": [], "Top_Cash_Engine": []}
+            
+        analyzed_list = filtered_list
 
         # 1. Normalize variables across the list
         max_density = max([x.get('structural_score', 0) for x in analyzed_list]) or 1.0
@@ -217,33 +253,8 @@ class ContractSellingAnalyst:
         if not strikes:
              return {"error": "No strikes returned by GEX data", "ticker": ticker}
              
-        # Extract ATM Weekly Premium Benchmark (Always from nearest-term weekly)
-        if expiration_input is None:
-            nearest_data = data
-        else:
-            nearest_data = fetch_gex_single(ticker, None)
-            if "error" in nearest_data:
-                nearest_data = data  # Fallback to current if nearest fails
-                
-        nearest_strikes = nearest_data.get("strikes", [])
-        if nearest_strikes:
-            # Sort by proximity to spot
-            sorted_nearest = sorted(nearest_strikes, key=lambda x: abs(x['strike'] - spot_price))
-            atm_strike_data = sorted_nearest[0]
-            if strategy_type.upper() == "CSP":
-                atm_weekly_premium = (atm_strike_data.get('putBid', 0) + atm_strike_data.get('putAsk', 0)) / 2
-            else:
-                atm_weekly_premium = (atm_strike_data.get('callBid', 0) + atm_strike_data.get('callAsk', 0)) / 2
-        else:
-            atm_weekly_premium = 0.0
-            
-        if atm_weekly_premium <= 0:
-            # Absolute fallback from first available Bid in nearest chain
-            if nearest_strikes:
-                 fallback_key = 'putBid' if strategy_type.upper() == "CSP" else 'callBid'
-                 atm_weekly_premium = nearest_strikes[0].get(fallback_key, 1.0) or 1.0
-            else:
-                 atm_weekly_premium = 1.0                     # Dynamic Margin Requirements Lookup
+        # Extract ATM Weekly Premium Benchmark from the already-fetched chain
+        atm_weekly_premium = _extract_atm_premium(strikes, spot_price, strategy_type)
         margin_info = MARGIN_REQS.get(ticker.upper(), MARGIN_REQS.get("DEFAULT", {}))
         if strategy_type.upper() == "CSP":
             init_req = margin_info.get("initial_long", DEFAULT_MARGIN_REQ)
