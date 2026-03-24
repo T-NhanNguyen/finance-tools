@@ -18,9 +18,9 @@ from core.strategies.strategy_config import (
     WHEEL_W_EFF, WHEEL_W_DENSITY, WHEEL_W_FLOOR,
     VELOCITY_EXPANSION, VELOCITY_COMPRESSION, SKEW_ADJUSTMENT,
     TOP_N_PILLARS, INITIAL_MARGIN_REQ, MAINTENANCE_MARGIN_REQ,
-    LENDERS, MARGIN_RATIO, MARGIN_REQS, DEFAULT_MARGIN_REQ
+    LENDERS, MARGIN_REQS, DEFAULT_MARGIN_REQ,
 )
-from core.analysis.csp_math_engine import calculate_option_metrics
+from core.analysis.csp_math_engine import calculate_option_metrics, calculate_cash_requirement
 
 
 class ContractSellingAnalyst:
@@ -32,15 +32,13 @@ class ContractSellingAnalyst:
     def __init__(
         self, 
         cash_equity: float, 
-        margin_loan: float, 
         initial_req: float = INITIAL_MARGIN_REQ, 
         maintenance_req: float = MAINTENANCE_MARGIN_REQ
     ):
         self.cash_equity = cash_equity
-        self.margin_loan = margin_loan
         self.initial_req = initial_req
         self.maintenance_req = maintenance_req
-        self.total_working_capital = cash_equity + margin_loan
+        self.total_working_capital = cash_equity
 
     def analyze_strike(
         self,
@@ -72,7 +70,6 @@ class ContractSellingAnalyst:
             strategy_type=strategy_type,
             total_working_capital=self.total_working_capital,
             cash_equity=self.cash_equity,
-            margin_loan=self.margin_loan,
             init_req=init_req,
             maint_req=maint_req
         )
@@ -249,15 +246,14 @@ class ContractSellingAnalyst:
                  atm_weekly_premium = 1.0                     # Dynamic Margin Requirements Lookup
         margin_info = MARGIN_REQS.get(ticker.upper(), MARGIN_REQS.get("DEFAULT", {}))
         if strategy_type.upper() == "CSP":
-            fallback_maint = DEFAULT_MARGIN_REQ * 0.90
             init_req = margin_info.get("initial_long", DEFAULT_MARGIN_REQ)
-            maint_req = margin_info.get("maint_long", fallback_maint)
+            maint_req = margin_info.get("maint_long", DEFAULT_MARGIN_REQ)
         else: # CC
-            fallback_maint = DEFAULT_MARGIN_REQ * 0.90
             init_req = margin_info.get("initial_short", DEFAULT_MARGIN_REQ)
-            maint_req = margin_info.get("maint_short", fallback_maint) 
+            maint_req = margin_info.get("maint_short", DEFAULT_MARGIN_REQ) 
 
-        effective_capital = self.cash_equity / init_req if init_req > 0 else self.total_working_capital
+        cash_req = calculate_cash_requirement(spot_price, init_req, maint_req)
+        effective_capital = (self.cash_equity / cash_req) * spot_price if cash_req > 0 else self.total_working_capital
 
         analyzed_results = []
         for s_data in strikes:
@@ -316,9 +312,8 @@ def run_scanner():
     tickers = [t.upper() for t in args.tickers] if args.tickers else ["ASTS", "QQQ", "RKLB", "NBIS"]
     
     cash_equity = sum(LENDERS)
-    margin_loan = cash_equity * MARGIN_RATIO
-    analyst = ContractSellingAnalyst(cash_equity=cash_equity, margin_loan=margin_loan)
-    print(f"Working Capital: ${analyst.total_working_capital:,.2f} (${analyst.cash_equity/1000:.0f}k Cash + ${analyst.margin_loan/1000:.0f}k Margin Expansion)")
+    analyst = ContractSellingAnalyst(cash_equity=cash_equity)
+    print(f"Working Capital: ${analyst.total_working_capital:,.2f} (${analyst.cash_equity/1000:.0f}k Cash)")
     print(f"Strategy: {args.strategy.upper()} | Engine Mode: {args.engine.upper()}")
     
     from concurrent.futures import ThreadPoolExecutor

@@ -7,8 +7,22 @@ Extracted from contract_selling_analyst.py
 
 from core.strategies.strategy_config import (
     FEDERAL_TAX_BRACKET, APPLIES_NIIT,
-    LOAN_RATE, MARGIN_RATE, SAFETY_MARGIN_THRESHOLD
+    LOAN_RATE, MARGIN_RATE, SAFETY_MARGIN_THRESHOLD,
+    SAFETY_BUFFER_TARGET
 )
+
+def calculate_cash_requirement(
+    effective_entry: float,
+    init_req: float,
+    maint_req: float
+) -> float:
+    """
+    Calculates the cash requirement per share with optimal safety cushions.
+    """
+    loan_safe = effective_entry * (1 - SAFETY_BUFFER_TARGET) * (1 - maint_req)
+    loan_limit = min(loan_safe, effective_entry * (1 - init_req))
+    return effective_entry - loan_limit
+
 
 def calculate_option_metrics(
     strike: float,
@@ -20,7 +34,6 @@ def calculate_option_metrics(
     strategy_type: str,
     total_working_capital: float,
     cash_equity: float,
-    margin_loan: float,
     init_req: float,
     maint_req: float
 ) -> dict:
@@ -36,8 +49,9 @@ def calculate_option_metrics(
     extrinsic_premium = premium - intrinsic_value
     
     # 2. CAPITAL & POSITION CALCULATIONS
-    target_capital = cash_equity / init_req if init_req > 0 else total_working_capital
-    shares_assigned_float = target_capital / strike if strike > 0 else 0
+    effective_entry = strike if strategy_type.upper() == "CSP" else underlying_price
+    cash_req = calculate_cash_requirement(effective_entry, init_req, maint_req)
+    shares_assigned_float = cash_equity / cash_req if cash_req > 0 else total_working_capital / strike
     contracts = int(shares_assigned_float / 100)
     shares_assigned = contracts * 100
     
@@ -45,8 +59,7 @@ def calculate_option_metrics(
     effective_tax_rate = FEDERAL_TAX_BRACKET + (0.038 if APPLIES_NIIT else 0)
     
     # Weighted Average Cost of Capital (WACC) to allocate carry costs proportionally
-    total_cap = cash_equity + margin_loan
-    wacc = ((cash_equity * LOAN_RATE) + (margin_loan * MARGIN_RATE)) / total_cap if total_cap > 0 else 0
+    wacc = LOAN_RATE
     holding_period_cost = (strike * init_req) * wacc * (days_to_expiry / 365)
     
     net_extrinsic_premium = extrinsic_premium - holding_period_cost
@@ -59,8 +72,7 @@ def calculate_option_metrics(
     eoy_projection_compounded = ((1 + (trade_roi_true/100))**annual_cycles - 1) * 100
     
     # 4. SAFETY & MARGIN CALL FLOOR (Position-Specific)
-    effective_entry = strike if strategy_type.upper() == "CSP" else underlying_price
-    margin_call_floor = effective_entry * (1 - init_req) / (1 - maint_req) if (1 - maint_req) > 0 else 0
+    margin_call_floor = (effective_entry - cash_req) / (1 - maint_req) if (1 - maint_req) > 0 else 0
     safety_margin_float = (underlying_price - strike) / underlying_price if underlying_price > 0 else 0
     safety_margin = safety_margin_float * 100
     

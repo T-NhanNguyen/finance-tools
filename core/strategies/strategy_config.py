@@ -25,7 +25,6 @@ LENDERS = [
 LOAN_RATE = 0.06
 
 # Broker margin terms
-MARGIN_RATIO = 0.6  # 60% Buying Power Expansion
 MARGIN_RATE = 0.08  # 8% Annual margin interest
 
 # Month (k) at which the total interest obligation is paid out to lenders.
@@ -90,6 +89,9 @@ MARGIN_REQS = {
 }
 # Default margin requirement if a ticker is missing from the dictionary
 DEFAULT_MARGIN_REQ = 0.50
+
+# Optimal Margin Sizing Safety Cushion target distance from entry to liquidation (e.g., 0.15 = 15%)
+SAFETY_BUFFER_TARGET = 0.20
 
 # Minimum premium-to-underlying yield required to qualify a trade (the "2% rule").
 # e.g. 0.02 = 2%
