@@ -116,7 +116,7 @@ class IndicatorsResponse(BaseModel):
 class StrikeAnalysisData(BaseModel):
     """Deep metrics for a single option strike analysis"""
     strike: float = Field(description="Option strike price")
-    strategy_tag: str = Field(description="Strategy bucket (Cash Engine / Wheel Engine)")
+    strategy_tag: Optional[str] = Field(None, description="Strategy bucket (None prior to actionable fitment)")
     premium: float = Field(description="Total premium price")
     premium_extrinsic: float = Field(description="Extrinsic value of the premium")
     contracts: int = Field(description="Number of affordable contracts")
@@ -169,10 +169,52 @@ class ContractSellingResponse(BaseModel):
     ticker: str = Field(description="Asset ticker symbol")
     spot_price: float = Field(description="Underlying price")
     strategy_type: str = Field(description="Strategy policy tag (CSP/CC)")
-    atm_premium_benchmark: float = Field(description="Anchor benchmark yield payout scalar benchmark allocation rate")
-    expiration: Optional[str] = Field(None, description="Expiration date scalar")
-    pillars: ActionablePillars = Field(description=" actionables profiles setups configs responsive sets layouts")
-    all_strikes: List[StrikeAnalysisData] = Field(default_factory=list, description="breaks Analytics dataset metrics mapped response")
+    atm_premium_benchmark: float = Field(description="Anchor benchmark yield payout scalar benchmark")
+    expiration: Optional[str] = Field(None, description="Expiration date")
+    effective_capital: float = Field(description="Total Buying Power budget mapped on current req margins set configs")
+    init_req: float = Field(description="Margin lock initial scalar applied on current benchmarked leverage rates scaling setups factors configurations")
+    maint_req: float = Field(description="Maintenance margin lock rate layouts formats setups profiles")
+    pillars: ActionablePillars = Field(description="Actionable setups configurations profiles dashboards overlays benchmarks scalar sets layouts")
+    all_strikes: List[StrikeAnalysisData] = Field(default_factory=list, description="Analytics dataset metrics mapped response Breakdown analytics")
+
+
+# ============================================================================
+# Portfolio Margin Allocator Response Models
+# ============================================================================
+
+class PortfolioPositionData(BaseModel):
+    """API payload representing a position in the optimal allocation pool."""
+    ticker: str = Field(description="Asset ticker symbol")
+    strike: float = Field(description="Position strike price")
+    contracts: int = Field(description="Number of contracts allocated")
+    notional: float = Field(description="Total notional value of position")
+    premium_collected: float = Field(description="Premium collected per contract")
+    strategy_type: str = Field(description="Strategy type (CSP/CC)")
+    maint_req: float = Field(description="Maintenance margin requirement coefficient")
+    status: Optional[str] = Field(None, description="Simulation outcome (FULL DEPLOYMENT, SCALED DOWN, etc.)")
+
+class PortfolioMarginResponse(BaseModel):
+    """API Response dataset covering absolute allocations across the shared pool"""
+    cash: float = Field(description="Base cash equity available")
+    accumulated_premiums: float = Field(description="Total premiums collected from allocation")
+    total_equity: float = Field(description="Combined cash and accumulated premiums")
+    tightest_req: float = Field(description="Tightest maintenance requirement bound")
+    margin_limit: float = Field(description="Calculated margin borrowing limit ceiling")
+    total_notional: float = Field(description="Total notional across all positions")
+    cash_utilized: float = Field(description="Equity deployed as cash layer collateral")
+    margin_utilized: float = Field(description="Leverage deployed in margin layer")
+    positions: List[PortfolioPositionData] = Field(default_factory=list, description="Optimal position combination breakdown")
+
+
+# ============================================================================
+# Optimal Allocation Request Model
+# ============================================================================
+
+class PortfolioMarginRequest(BaseModel):
+    """API Request payload representing candidates to solve in optimal allocation."""
+    cash: float = Field(description="Base cash equity budget")
+    candidates: List[PortfolioPositionData] = Field(description="Proposed option payloads to simulate allocation layout")
+
 
 
 # ============================================================================

@@ -86,6 +86,7 @@ MARGIN_REQS = {
     "SOFI": {"initial_long": 0.2500, "maint_long": 0.2500, "initial_short": 0.3000, "maint_short": 0.3000},
     "HIMS": {"initial_long": 0.3526, "maint_long": 0.3206, "initial_short": 0.3526, "maint_short": 0.3206},
     "RKLB": {"initial_long": 0.3282, "maint_long": 0.2984, "initial_short": 0.3282, "maint_short": 0.3000},
+    "RKLB": {"initial_long": 0.2500, "maint_long": 0.2500, "initial_short": 0.3000, "maint_short": 0.3000},
     "AAPL": {"initial_long": 0.2500, "maint_long": 0.2500, "initial_short": 0.3000, "maint_short": 0.3000}
 }
 # Default margin requirement if a ticker is missing from the dictionary

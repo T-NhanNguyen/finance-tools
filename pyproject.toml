@@ -16,7 +16,4 @@ dependencies = [
 # They are only used locally for visualization scripts
 
 [tool.uv]
-# Exclude multitasking - it has no wheel on PyPI and Vercel's uv
-# runs with --no-build. multitasking is a transitive dep of yfinance
-# but yfinance works fine without it (only used for optional concurrent downloads)
-exclude-dependencies = ["multitasking"]
+# Removed multitasking exclusion as yfinance explicitly requires it on import
