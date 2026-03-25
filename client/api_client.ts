@@ -16,10 +16,12 @@ import type {
 export class FinanceAPIClient {
   private baseURL: string;
   private timeout: number;
+  private apiSecret?: string;
 
   constructor(config: APIConfig) {
     this.baseURL = config.baseURL.replace(/\/$/, ''); // Remove trailing slash
     this.timeout = config.timeout || 30000; // Default 30s timeout
+    this.apiSecret = config.apiSecret;
   }
 
   /**
@@ -33,13 +35,19 @@ export class FinanceAPIClient {
     const timeoutId = setTimeout(() => controller.abort(), this.timeout);
 
     try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        ...(options.headers as Record<string, string> || {}),
+      };
+
+      if (this.apiSecret) {
+        headers['x-api-secret'] = this.apiSecret;
+      }
+
       const response = await fetch(url, {
         ...options,
         signal: controller.signal,
-        headers: {
-          'Content-Type': 'application/json',
-          ...options.headers,
-        },
+        headers,
       });
 
       clearTimeout(timeoutId);
@@ -167,9 +175,13 @@ export class FinanceAPIClient {
 export const createClient = (
   baseURL: string = process.env.NEXT_PUBLIC_FINANCE_API_URL ?? 
              process.env.VITE_FINANCE_API_URL ?? 
-             'http://localhost:8000'
+             'http://localhost:8000',
+  apiSecret?: string
 ) => {
-  return new FinanceAPIClient({ baseURL });
+  return new FinanceAPIClient({ 
+    baseURL,
+    apiSecret: apiSecret ?? process.env.FINANCE_API_SECRET
+  });
 };
 
 // ============================================================================

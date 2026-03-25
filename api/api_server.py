@@ -3,12 +3,24 @@ FastAPI Backend Server
 Provides HTTP endpoints for finance tools with structured JSON responses.
 """
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, List
+import os
 
 from .api_types import GEXRequest, IndicatorsRequest, GEXResponse, IndicatorsResponse, ErrorResponse
 from .api_handlers import getGEXData, getIndicatorsData
+
+# Security Configuration
+API_SECRET_KEY = os.getenv("API_SECRET_KEY")
+
+async def verify_api_secret(x_api_secret: Optional[str] = Header(None)):
+    """Verify the shared secret if one is configured."""
+    if API_SECRET_KEY and x_api_secret != API_SECRET_KEY:
+        raise HTTPException(status_code=403, detail="Invalid API Secret")
+
+# Create a dependency sequence to apply optionally
+api_dependencies = [Depends(verify_api_secret)] if API_SECRET_KEY else []
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -18,9 +30,14 @@ app = FastAPI(
 )
 
 # Configure CORS for frontend access
+ALLOWED_ORIGINS = os.getenv(
+    "ALLOWED_ORIGINS", 
+    "https://stool-webapp.vercel.app,http://localhost:3000,http://localhost:8000"
+).split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify your frontend domain
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -41,7 +58,7 @@ async def healthCheck():
 # GEX Endpoints
 # ============================================================================
 
-@app.get("/api/gex/{ticker}", response_model=GEXResponse)
+@app.get("/api/gex/{ticker}", response_model=GEXResponse, dependencies=api_dependencies)
 async def getGEX(
     ticker: str,
     expiration: Optional[str] = Query(None, description="Expiration date (YYYY-MM-DD, partial, or index)")
@@ -65,7 +82,7 @@ async def getGEX(
     return result
 
 
-@app.post("/api/gex", response_model=GEXResponse)
+@app.post("/api/gex", response_model=GEXResponse, dependencies=api_dependencies)
 async def postGEX(request: GEXRequest):
     """
     Get Gamma Exposure (GEX) analysis via POST request.
@@ -88,7 +105,7 @@ async def postGEX(request: GEXRequest):
 # Technical Indicators Endpoints
 # ============================================================================
 
-@app.get("/api/indicators/{ticker}", response_model=IndicatorsResponse)
+@app.get("/api/indicators/{ticker}", response_model=IndicatorsResponse, dependencies=api_dependencies)
 async def getIndicators(
     ticker: str,
     period: str = Query("6mo", description="Time period (1mo, 3mo, 6mo, 1y, 2y, 5y)"),
@@ -120,7 +137,7 @@ async def getIndicators(
     return result
 
 
-@app.post("/api/indicators", response_model=IndicatorsResponse)
+@app.post("/api/indicators", response_model=IndicatorsResponse, dependencies=api_dependencies)
 async def postIndicators(request: IndicatorsRequest):
     """
     Get technical indicators analysis via POST request.

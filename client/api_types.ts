@@ -173,6 +173,8 @@ export interface APIConfig {
   baseURL: string;
   /** Optional timeout in milliseconds */
   timeout?: number;
+  /** Optional API secret for backend tunnel authentication */
+  apiSecret?: string;
 }
 
 // ============================================================================

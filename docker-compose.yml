@@ -25,5 +25,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONPATH=/app
+      - API_SECRET_KEY=your-secret-password-here  # Change this!
+      - ALLOWED_ORIGINS=https://stool-webapp.vercel.app,http://localhost:3000,http://localhost:8000 # Change this!
     extra_hosts:
       - "host.docker.internal:host-gateway"
