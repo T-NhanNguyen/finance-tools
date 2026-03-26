@@ -9,7 +9,7 @@ import time
 import threading
 from typing import List, Dict, Optional
 from concurrent.futures import ThreadPoolExecutor
-from api.api_handlers import getGEXData
+from core.data.get_gex_data import fetch_gex_structured
 
 CACHE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".gex_cache"))
 CACHE_EXPIRY = 900  # 15 minutes (900 seconds)
@@ -66,7 +66,7 @@ def fetch_gex_single(ticker: str, expiration: Optional[str] = None) -> Dict:
         last_result = {"error": f"All {MAX_FETCH_RETRIES} fetch attempts failed", "ticker": ticker}
         for attempt in range(MAX_FETCH_RETRIES):
             time.sleep(FETCH_STAGGER_DELAY * (2 ** attempt))
-            data = getGEXData(ticker, expiration)
+            data = fetch_gex_structured(ticker, expiration)
             if "error" not in data:
                 strikes = data.get("strikes", [])
                 total_bids = sum((s.get("putBid", 0) or 0) + (s.get("callBid", 0) or 0) for s in strikes)

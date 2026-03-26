@@ -8,8 +8,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, List
 import os
 
-from .api_types import GEXRequest, IndicatorsRequest, GEXResponse, IndicatorsResponse, ErrorResponse
-from .api_handlers import getGEXData, getIndicatorsData
+from .api_types import (
+    GEXRequest, IndicatorsRequest, GEXResponse, IndicatorsResponse, ErrorResponse,
+    ContractSellingRequest, ContractSellingResponse, PortfolioMarginRequest, PortfolioMarginResponse
+)
+from .api_handlers import getGEXData, getIndicatorsData, getContractSellingData, optimizePortfolioAllocation
 
 # Security Configuration
 API_SECRET_KEY = os.getenv("API_SECRET_KEY")
@@ -49,8 +52,10 @@ app.add_middleware(
 # ============================================================================
 
 @app.get("/health")
+@app.get("/api/status")
 async def healthCheck():
     """Health check endpoint"""
+    print("Health check endpoint hit!")
     return {"status": "healthy", "service": "finance-tools-api"}
 
 
@@ -158,6 +163,63 @@ async def postIndicators(request: IndicatorsRequest):
     if "error" in result:
         raise HTTPException(status_code=400, detail=result)
     
+    return result
+
+
+# ============================================================================
+# Contract Strategy Scanner Endpoints
+# ============================================================================
+
+@app.get("/api/scanner/{ticker}", response_model=ContractSellingResponse, dependencies=api_dependencies)
+async def getScanner(
+    ticker: str,
+    strategy: Optional[str] = Query("CSP", description="Strategy type (CSP or CC)"),
+    expiration: Optional[str] = Query(None, description="Expiration date (YYYY-MM-DD or index)"),
+    engine: Optional[str] = Query("BOTH", description="Engine filter mode (BOTH, CASH, WHEEL)")
+):
+    """
+    Get deep option selling analysis (Pillars) for a ticker.
+    """
+    result = getContractSellingData(ticker, strategy, expiration, engine)
+    
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result)
+        
+    return result
+
+
+@app.post("/api/scanner", response_model=ContractSellingResponse, dependencies=api_dependencies)
+async def postScanner(request: ContractSellingRequest):
+    """
+    Get deep option selling analysis (POST variant).
+    """
+    result = getContractSellingData(
+        request.ticker, 
+        request.strategy or "CSP", 
+        request.expiration, 
+        request.engine or "BOTH"
+    )
+    
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result)
+        
+    return result
+
+
+# ============================================================================
+# Portfolio Allocation Endpoints
+# ============================================================================
+
+@app.post("/api/allocate", response_model=PortfolioMarginResponse, dependencies=api_dependencies)
+async def allocatePortfolio(request: PortfolioMarginRequest):
+    """
+    Solve for optimal contract allocation across multiple candidates.
+    """
+    result = optimizePortfolioAllocation(request.cash, [c.model_dump() for c in request.candidates])
+    
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result)
+        
     return result
 
 

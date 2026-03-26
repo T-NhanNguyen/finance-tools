@@ -26,17 +26,48 @@ class Position:
     contracts: int
     premium_collected: float
     strategy_type: str = "CSP"  # CSP or CC
+    spot_at_entry: float = 0.0
+    initial_req: Optional[float] = None
     maint_req: Optional[float] = None
 
     def __post_init__(self):
+        margin_info = MARGIN_REQS.get(self.ticker.upper(), {})
+        # selling options (both CSP and CC) use 'short' requirements
+        if self.initial_req is None:
+            self.initial_req = margin_info.get("initial_short", DEFAULT_MARGIN_REQ)
         if self.maint_req is None:
-            margin_info = MARGIN_REQS.get(self.ticker.upper(), {})
-            key = "maint_long" if self.strategy_type.upper() == "CSP" else "maint_short"
-            self.maint_req = margin_info.get(key, DEFAULT_MARGIN_REQ)
+            self.maint_req = margin_info.get("maint_short", DEFAULT_MARGIN_REQ)
+        
+        # Default spot to strike if not provided (conservative for CSP)
+        if self.spot_at_entry <= 0:
+            self.spot_at_entry = self.strike
 
     @property
     def notional(self) -> float:
         return self.strike * self.contracts * 100
+
+    @property
+    def margin_call_floor(self) -> float:
+        """
+        The price at which the maintenance requirement for the shares (after assignment) 
+        would exactly equal the equity allocated to this position.
+        Uses the same math as the core engine for consistency.
+        """
+        effective_entry = self.strike if self.strategy_type.upper() == "CSP" else self.spot_at_entry
+        # Re-calculating cash_req logic locally for summary precision
+        loan_safe = effective_entry * (1 - 0.20) * (1 - self.maint_req) # 0.20 is SAFETY_BUFFER_TARGET
+        loan_limit = min(loan_safe, effective_entry * (1 - self.initial_req))
+        return loan_limit / (1 - self.maint_req) if (1 - self.maint_req) > 0 else 0
+
+    @property
+    def initial_margin_required(self) -> float:
+        """Margin collateral held by broker at entry."""
+        return self.notional * self.initial_req
+
+    @property
+    def maintenance_margin_required(self) -> float:
+        """Ongoing margin collateral requirement."""
+        return self.notional * self.maint_req
 
 
 # =============================================================================
@@ -58,58 +89,63 @@ class PortfolioMarginAllocator:
         return self.cash + self.accumulated_premiums
 
     @property
-    def tightest_req(self) -> float:
-        if not self.positions:
-            return DEFAULT_MARGIN_REQ
-        return max(p.maint_req for p in self.positions)
+    def total_initial_margin(self) -> float:
+        """Sum of all entry margin requirements."""
+        return sum(p.initial_margin_required for p in self.positions)
 
     @property
-    def margin_limit(self) -> float:
-        """
-        Margin boundary established by the single most restrictive active maint_req.
-        """
-        return self.total_equity * (1 / self.tightest_req - 1)
-
-    @property
-    def total_notional(self) -> float:
-        return sum(p.notional for p in self.positions)
-
-    @property
-    def cash_utilized(self) -> float:
-        """Cash is utilized first. It caps out at total_equity."""
-        return min(self.total_notional, self.total_equity)
+    def total_maintenance_margin(self) -> float:
+        """Sum of all ongoing maintenance requirements."""
+        return sum(p.maintenance_margin_required for p in self.positions)
 
     @property
     def margin_utilized(self) -> float:
-        """Margin is only tapped for the notional that exceeds cash equity."""
-        return max(0.0, self.total_notional - self.total_equity)
+        """Current margin consumed relative to total equity."""
+        return self.total_maintenance_margin
+
+    @property
+    def buying_power_remaining(self) -> float:
+        """Approximate amount of additional notional that can be carried at 50% avg req."""
+        available_equity = max(0, self.total_equity - self.total_initial_margin)
+        return available_equity * 2.0
+
+    @property
+    def total_notional(self) -> float:
+        """Sum of notional value (strike * contracts * 100) of all positions."""
+        return sum(p.notional for p in self.positions)
+
+    @property
+    def total_assignment_exposure(self) -> float:
+        """Total cash required to settle all short positions if assigned."""
+        return self.total_notional
 
     def print_summary(self):
         """Prints a structured view of the shared collateral pool state."""
-        print(f"\n{'='*65}")
+        print(f"\n{'='*82}")
         print(f"PORTFOLIO MARGIN ALLOCATOR — Shared Collateral Pool")
-        print(f"{'='*65}")
+        print(f"{'='*82}")
         print(f"  Cash (Lender):         ${self.cash:>14,.2f}")
         print(f"  Accumulated Premiums:  ${self.accumulated_premiums:>14,.2f}")
         print(f"  Total Equity:          ${self.total_equity:>14,.2f}")
-        print(f"  Margin Limit:          ${self.margin_limit:>14,.2f}  (tightest req: {self.tightest_req*100:.1f}%)")
-        print(f"{'─'*65}")
-        print(f"  {'Ticker':<8} {'Contracts':>9} {'Strike':>8} {'Notional':>12} {'Premium':>11}")
-        print(f"{'─'*69}")
+        print(f"  Assignment Exposure:   ${self.total_assignment_exposure:>14,.2f}")
+        print(f"{'─'*82}")
+        print(f"  {'Ticker':<8} {'Contracts':>9} {'Strike':>8} {'Notional':>12} {'Floor':>9} {'Safety':>10}")
+        print(f"{'─'*82}")
         for p in self.positions:
             if p.contracts > 0:
-                total_prem = p.contracts * p.premium_collected * 100
-                print(f"  {p.ticker:<8} {p.contracts:>9} {p.strike:>8.2f} {p.notional:>12,.2f} {total_prem:>11,.2f}")
-        print(f"{'─'*69}")
-        print(f"  {'TOTALS':<8} {'':>9} {'':>8} {self.total_notional:>12,.2f} {self.accumulated_premiums:>11,.2f}")
-        print(f"{'─'*69}")
+                safety_pct = ((p.spot_at_entry - p.margin_call_floor) / p.spot_at_entry * 100) if p.spot_at_entry else 0
+                print(f"  {p.ticker:<8} {p.contracts:>9} {p.strike:>8.2f} {p.notional:>12,.2f} {p.margin_call_floor:>9.2f} {safety_pct:>9.1f}%")
+        print(f"{'─'*82}")
+        print(f"  {'TOTALS':<8} {'':>9} {'':>8} {self.total_notional:>12,.2f}")
+        print(f"{'─'*82}")
 
-        cash_pct = (self.cash_utilized / self.total_equity * 100) if self.total_equity else 0
-        margin_pct = (self.margin_utilized / self.margin_limit * 100) if self.margin_limit else 0
+        margin_pct = (self.total_maintenance_margin / self.total_equity * 100) if self.total_equity else 0
         
-        print(f"  Cash Layer:   ${self.cash_utilized:>12,.2f} / ${self.total_equity:,.2f}  ({cash_pct:.1f}% used)")
-        print(f"  Margin Layer: ${self.margin_utilized:>12,.2f} / ${self.margin_limit:,.2f}  ({margin_pct:.1f}% used)")
-        print(f"{'='*65}\n")
+        print(f"  Equity (Buffer):   ${self.total_equity:>12,.2f}")
+        print(f"  Margin Used:       ${self.total_maintenance_margin:>12,.2f}  ({margin_pct:.1f}% capacity used)")
+        print(f"  Remaining BP:      ${self.buying_power_remaining:>12,.2f}  (est. @ 50% req)")
+        print(f"  Note: High capacity usage is normal for optimized allocation.")
+        print(f"{'='*82}\n")
 
 
 def optimize_allocation(allocator: PortfolioMarginAllocator, candidates: List[Position]) -> List[Position]:
@@ -121,70 +157,61 @@ def optimize_allocation(allocator: PortfolioMarginAllocator, candidates: List[Po
     best_counts = {i: 0 for i in range(len(candidates))}
     E0 = allocator.cash
 
-    # Group by potential binding limits: we must test every candidate's maint_req acting as the ceiling
-    unique_reqs = sorted(list(set(c.maint_req for c in candidates)))
+    # Solver now uses per-position margin rates instead of a global bucket.
+    # Mathematical constraint: Sum(count_i * 100 * (strike_i * initial_req_i - premium_i)) <= E0
+    items = []
+    for i, c in enumerate(candidates):
+        w = 100 * (c.strike * c.initial_req - c.premium_collected)
+        v = 100 * c.premium_collected
+        cap = c.contracts
+        items.append((i, w, v, cap))
 
-    for M in unique_reqs:
-        # If M is the tightest constraint, we can only safely mix in tickers with req <= M
-        valid_indices = [i for i, c in enumerate(candidates) if c.maint_req <= M]
-        if not valid_indices:
-            continue
+    # Sort by best intrinsic capital efficiency
+    items.sort(key=lambda x: x[2] / x[1] if x[1] > 0 else float('inf'), reverse=True)
+    
+    capacity = E0
 
-        items = []
-        for i in valid_indices:
-            c = candidates[i]
-            # Formulated mathematically from: Sum(notional) <= (E0 + Sum(Premium)) / M
-            w = 100 * (c.strike - c.premium_collected / M)
-            v = 100 * c.premium_collected
-            cap = c.contracts
-            items.append((i, w, v, cap))
+    # DFS Branch & Bound search
+    def dfs(item_idx: int, current_w: float, current_v: float, counts: dict):
+        nonlocal best_premium, best_counts
+        if item_idx == len(items):
+            if current_v > best_premium:
+                best_premium = current_v
+                for i in range(len(candidates)):
+                    best_counts[i] = counts.get(i, 0)
+            return
 
-        # Sort by best intrinsic capital efficiency for high-speed branch pruning
-        items.sort(key=lambda x: x[2] / x[1] if x[1] > 0 else float('inf'), reverse=True)
-        
-        capacity = E0 / M
+        orig_i, w, v, cap = items[item_idx]
 
-        # DFS Branch & Bound search
-        def dfs(item_idx: int, current_w: float, current_v: float, counts: dict):
-            nonlocal best_premium, best_counts
-            if item_idx == len(items):
-                if current_v > best_premium:
-                    best_premium = current_v
-                    for i in range(len(candidates)):
-                        best_counts[i] = counts.get(i, 0)
-                return
+        # Relaxation Bound (best case projection)
+        rem_cap = capacity - current_w
+        ub = current_v
+        for next_idx in range(item_idx, len(items)):
+            _, nw, nv, ncap = items[next_idx]
+            if nw <= 0:
+                ub += ncap * nv
+            else:
+                take = min(ncap, rem_cap / nw)
+                if take > 0:
+                    ub += take * nv
+                    rem_cap -= take * nw
+                if rem_cap <= 0:
+                    break
 
-            orig_i, w, v, cap = items[item_idx]
+        if ub <= best_premium:
+            return  # Prune search branch
 
-            # Relaxation Bound (best case projection)
-            rem_cap = capacity - current_w
-            ub = current_v
-            for next_idx in range(item_idx, len(items)):
-                _, nw, nv, ncap = items[next_idx]
-                if nw <= 0:
-                    ub += ncap * nv
-                else:
-                    take = min(ncap, rem_cap / nw)
-                    if take > 0:
-                        ub += take * nv
-                        rem_cap -= take * nw
-                    if rem_cap <= 0:
-                        break
+        # Search down from max feasible size
+        max_take = cap
+        if w > 0:
+            max_take = min(max_take, int((capacity - current_w) / w))
 
-            if ub <= best_premium:
-                return  # Prune search branch
+        for take in range(max_take, -1, -1):
+            counts[orig_i] = take
+            dfs(item_idx + 1, current_w + take * w, current_v + take * v, counts)
+            counts[orig_i] = 0
 
-            # Search down from max feasible size
-            max_take = cap
-            if w > 0:
-                max_take = min(max_take, int((capacity - current_w) / w))
-
-            for take in range(max_take, -1, -1):
-                counts[orig_i] = take
-                dfs(item_idx + 1, current_w + take * w, current_v + take * v, counts)
-                counts[orig_i] = 0
-
-        dfs(0, 0.0, 0.0, {})
+    dfs(0, 0.0, 0.0, {})
 
     optimal_positions = []
     for i, c in enumerate(candidates):
@@ -196,6 +223,7 @@ def optimize_allocation(allocator: PortfolioMarginAllocator, candidates: List[Po
                 contracts=optimal_size,
                 premium_collected=c.premium_collected,
                 strategy_type=c.strategy_type,
+                initial_req=c.initial_req,
                 maint_req=c.maint_req
             )
         )
@@ -256,6 +284,8 @@ if __name__ == "__main__":
                     contracts=candidate_pillar['Contracts'],
                     premium_collected=candidate_pillar['Premium_Raw'],
                     strategy_type=args.strategy,
+                    spot_at_entry=res.get("spot_price", 0),
+                    initial_req=res.get("initial_req"),
                     maint_req=res.get("maint_req")
                 )
             )

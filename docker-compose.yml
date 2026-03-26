@@ -22,6 +22,7 @@ services:
     volumes:
       - .:/app
       - /app/node_modules
+    restart: unless-stopped
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONPATH=/app

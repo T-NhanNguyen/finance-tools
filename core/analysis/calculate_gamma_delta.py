@@ -12,20 +12,23 @@ class BlackScholesCalculator:
     Handles single values, lists, or NumPy arrays through vectorization.
     """
 
-    def _validateInputs(self, stockPrice: float, strikePrice: Union[float, List[float], np.ndarray], timeToExpirationYears: float, riskFreeRate: float, impliedVolatility: Union[float, np.ndarray]) -> np.ndarray:
+    def _validateInputs(self, stockPrice: float, strikePrice: Union[float, List[float], np.ndarray], timeToExpirationYears: float, riskFreeRate: float, impliedVolatility: Union[float, np.ndarray]) -> (np.ndarray, np.ndarray):
         """
-        Validates mathematical constraints and returns strikes as a consistent NumPy array.
+        Validates mathematical constraints and returns strikes and IVs as consistent NumPy arrays.
         """
         ivArray = np.asarray(impliedVolatility)
         
-        if stockPrice <= 0 or timeToExpirationYears <= 0 or np.any(ivArray <= 0):
-            raise ValueError(f"Stock price, time, and volatility must be positive.")
+        if stockPrice <= 0 or timeToExpirationYears <= 0:
+            raise ValueError(f"Stock price and time must be positive. S={stockPrice}, T={timeToExpirationYears}")
+        
+        # Clip zero/negative IV to avoid division by zero (minimum 1bp IV)
+        ivArray_clean = np.where(ivArray <= 0, 0.0001, ivArray)
         
         strikePrices = np.asarray(strikePrice)
         if np.any(strikePrices <= 0):
             raise ValueError(f"All strike prices must be positive. Received strikes: {strikePrice}")
             
-        return strikePrices
+        return strikePrices, ivArray_clean
 
     def _calculateD1(self, stockPrice: float, strikePrices: np.ndarray, timeToExpirationYears: float, riskFreeRate: float, impliedVolatility: float) -> np.ndarray:
         """
@@ -52,12 +55,12 @@ class BlackScholesCalculator:
             daysToExpiration = int(timeToExpirationYears * DAYS_IN_YEAR)
             
         riskFreeRate = getRiskFreeRate(daysToExpiration)
-        strikePricesArray = self._validateInputs(stockPrice, strikePrice, timeToExpirationYears, riskFreeRate, impliedVolatility)
+        strikePricesArray, cleanedIV = self._validateInputs(stockPrice, strikePrice, timeToExpirationYears, riskFreeRate, impliedVolatility)
         
-        d1Values = self._calculateD1(stockPrice, strikePricesArray, timeToExpirationYears, riskFreeRate, impliedVolatility)
+        d1Values = self._calculateD1(stockPrice, strikePricesArray, timeToExpirationYears, riskFreeRate, cleanedIV)
         pdfValues = norm.pdf(d1Values)
         
-        gammaResult = pdfValues / (stockPrice * impliedVolatility * np.sqrt(timeToExpirationYears))
+        gammaResult = pdfValues / (stockPrice * cleanedIV * np.sqrt(timeToExpirationYears))
         
         # Return same type as input (scalar vs array)
         return float(gammaResult) if np.isscalar(strikePrice) else gammaResult
@@ -70,9 +73,9 @@ class BlackScholesCalculator:
             daysToExpiration = int(timeToExpirationYears * DAYS_IN_YEAR)
             
         riskFreeRate = getRiskFreeRate(daysToExpiration)
-        strikePricesArray = self._validateInputs(stockPrice, strikePrice, timeToExpirationYears, riskFreeRate, impliedVolatility)
+        strikePricesArray, cleanedIV = self._validateInputs(stockPrice, strikePrice, timeToExpirationYears, riskFreeRate, impliedVolatility)
         
-        d1Values = self._calculateD1(stockPrice, strikePricesArray, timeToExpirationYears, riskFreeRate, impliedVolatility)
+        d1Values = self._calculateD1(stockPrice, strikePricesArray, timeToExpirationYears, riskFreeRate, cleanedIV)
         
         if optionType.lower() == 'call':
             deltaResult = norm.cdf(d1Values)
