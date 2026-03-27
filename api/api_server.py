@@ -8,8 +8,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, List
 import os
 
-from .api_types import GEXRequest, IndicatorsRequest, GEXResponse, IndicatorsResponse, ErrorResponse
-from .api_handlers import getGEXData, getIndicatorsData
+from .api_types import (
+    GEXRequest, IndicatorsRequest, GEXResponse, IndicatorsResponse, ErrorResponse,
+    ContractSellingRequest, ContractSellingResponse, PortfolioSimulationRequest, PortfolioMarginResponse
+)
+from .api_handlers import getGEXData, getIndicatorsData, getContractSellingData, getPortfolioSimulationData
 
 # Security Configuration
 API_SECRET_KEY = os.getenv("API_SECRET_KEY")
@@ -49,8 +52,10 @@ app.add_middleware(
 # ============================================================================
 
 @app.get("/health")
+@app.get("/api/status")
 async def healthCheck():
     """Health check endpoint"""
+    print("Health check endpoint hit!")
     return {"status": "healthy", "service": "finance-tools-api"}
 
 
@@ -65,20 +70,10 @@ async def getGEX(
 ):
     """
     Get Gamma Exposure (GEX) analysis for a ticker.
-    
-    Args:
-        ticker: Stock ticker symbol (e.g., SPY, QQQ, AAPL)
-        expiration: Optional expiration date. Defaults to nearest expiration.
-        
-    Returns:
-        GEXResponse with strike data and metadata
     """
     result = getGEXData(ticker, expiration)
-    
-    # Check if error response
     if "error" in result:
         raise HTTPException(status_code=400, detail=result)
-    
     return result
 
 
@@ -86,18 +81,10 @@ async def getGEX(
 async def postGEX(request: GEXRequest):
     """
     Get Gamma Exposure (GEX) analysis via POST request.
-    
-    Args:
-        request: GEXRequest with ticker and optional expiration
-        
-    Returns:
-        GEXResponse with strike data and metadata
     """
     result = getGEXData(request.ticker, request.expiration)
-    
     if "error" in result:
         raise HTTPException(status_code=400, detail=result)
-    
     return result
 
 
@@ -114,26 +101,14 @@ async def getIndicators(
 ):
     """
     Get technical indicators analysis for a ticker.
-    
-    Args:
-        ticker: Stock ticker symbol
-        period: Time period for analysis
-        interval: Data granularity
-        indicators: Comma-separated indicator names
-        
-    Returns:
-        IndicatorsResponse with time series data and trend segments
     """
-    # Parse indicators from comma-separated string
     indicatorList = None
     if indicators:
         indicatorList = [ind.strip() for ind in indicators.split(",")]
     
     result = getIndicatorsData(ticker, period, interval, indicatorList)
-    
     if "error" in result:
         raise HTTPException(status_code=400, detail=result)
-    
     return result
 
 
@@ -141,12 +116,6 @@ async def getIndicators(
 async def postIndicators(request: IndicatorsRequest):
     """
     Get technical indicators analysis via POST request.
-    
-    Args:
-        request: IndicatorsRequest with ticker and parameters
-        
-    Returns:
-        IndicatorsResponse with time series data and trend segments
     """
     result = getIndicatorsData(
         request.ticker,
@@ -154,10 +123,43 @@ async def postIndicators(request: IndicatorsRequest):
         request.interval or "1d",
         request.indicators
     )
-    
     if "error" in result:
         raise HTTPException(status_code=400, detail=result)
-    
+    return result
+
+
+# ============================================================================
+# Contract Selling Endpoints
+# ============================================================================
+
+@app.post("/api/contract-selling", response_model=ContractSellingResponse, dependencies=api_dependencies)
+async def analyze_contract_selling(request: ContractSellingRequest):
+    """Analyze a single asset for option selling opportunities."""
+    result = getContractSellingData(
+        request.ticker, 
+        request.strategy or "CSP", 
+        request.engine or "BOTH", 
+        request.expiration
+    )
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+# ============================================================================
+# Portfolio Simulation Endpoints
+# ============================================================================
+
+@app.post("/api/portfolio-simulation", response_model=PortfolioMarginResponse, dependencies=api_dependencies)
+async def simulate_portfolio_margin(request: PortfolioSimulationRequest):
+    """Simulate shared portfolio margin across multiple tickers."""
+    result = getPortfolioSimulationData(
+        request.tickers,
+        request.strategy or "CSP",
+        request.expiration
+    )
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result)
     return result
 
 
@@ -166,11 +168,11 @@ async def postIndicators(request: IndicatorsRequest):
 # ============================================================================
 
 if __name__ == "__main__":
-    import uvicorn # not compatible with vercel. moved here for local run
+    import uvicorn
     uvicorn.run(
         "api.api_server:app",
         host="0.0.0.0",
         port=8000,
-        reload=True,  # Auto-reload on code changes (disable in production)
+        reload=True,
         log_level="info"
     )

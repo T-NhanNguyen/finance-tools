@@ -3,74 +3,11 @@ import pandas as pd
 from core.data import getOptionChain, getOptionExpirations, getCurrentPrice
 from core.analysis import calculateGamma
 from datetime import datetime
+from core.data.gex_provider import parse_flexible_date, OPTION_CHAIN_LENGTH
 import argparse
 import sys
 
-OPTION_CHAIN_LENGTH = 10
 
-def parse_flexible_date(ticker, date_str):
-    """
-    Resolves a flexible date string or index to a valid expiration date (YYYY-MM-DD).
-    
-    Supports:
-    - None or empty string: Nearest future expiration.
-    - Numeric index (e.g., '0' for nearest, '1' for next).
-    - Partial strings (e.g., '2026-01' -> '2026-01-16').
-    - Exact dates (YYYY-MM-DD).
-    """
-    expirations = getOptionExpirations(ticker)
-    if not expirations:
-        return None
-    
-    # Handle empty/None -> nearest
-    if not date_str:
-        today = datetime.now().strftime("%Y-%m-%d")
-        future_exps = [e for e in expirations if e >= today]
-        return future_exps[0] if future_exps else expirations[0]
-
-    date_str = str(date_str).strip().lower()
-
-    # Handle numeric index
-    if date_str.isdigit():
-        idx = int(date_str)
-        if 0 <= idx < len(expirations):
-            return expirations[idx]
-        return expirations[0]
-
-    # Try parsing common formats like M/D/YY, M/D/YYYY, etc.
-    parsed_dt_obj = None
-    for fmt in ("%m/%d/%y", "%m-%d-%y", "%m/%d/%Y", "%m-%d-%Y", "%Y-%m-%d"):
-        try:
-            dt = datetime.strptime(date_str, fmt)
-            normalized = dt.strftime("%Y-%m-%d")
-            if not parsed_dt_obj:
-                parsed_dt_obj = dt
-            if normalized in expirations:
-                return normalized
-        except ValueError:
-            continue
-
-    # Normalize separators for prefix/partial match logic
-    normalized_input = date_str.replace("/", "-").replace(".", "-")
-
-    # Exact match after normalization
-    if normalized_input in expirations:
-        return normalized_input
-
-    # Prefix or partial match
-    matches = [e for e in expirations if e.startswith(normalized_input) or normalized_input in e]
-    if matches:
-        return matches[0]
-
-    # Fallback to nearest
-    if parsed_dt_obj:
-        # Find the expiration date closest to the parsed date
-        closest_date = min(expirations, key=lambda e: abs((datetime.strptime(e, "%Y-%m-%d") - parsed_dt_obj).total_seconds()))
-        return closest_date
-
-    today = datetime.now().strftime("%Y-%m-%d")
-    future_exps = [e for e in expirations if e >= today]
-    return future_exps[0] if future_exps else expirations[0]
 
 def visualize_gex(ticker, expiration_input=None):
     ticker = ticker.upper()

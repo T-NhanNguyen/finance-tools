@@ -258,3 +258,10 @@ class ContractSellingRequest(BaseModel):
     strategy: Optional[Literal["CSP", "CC"]] = Field("CSP", description="Strategy type: CSP or CC")
     engine: Optional[Literal["BOTH", "CASH", "WHEEL"]] = Field("BOTH", description="Engine filter mode (BOTH, CASH, WHEEL)")
     expiration: Optional[str] = Field(None, description="Expiration date (YYYY-MM-DD or index)")
+
+
+class PortfolioSimulationRequest(BaseModel):
+    """Request parameters for Portfolio Margin simulation"""
+    tickers: List[str] = Field(description="List of tickers to scan and optimize")
+    strategy: Optional[Literal["CSP", "CC"]] = Field("CSP", description="Strategy type: CSP or CC")
+    expiration: Optional[str] = Field(None, description="Expiration date")

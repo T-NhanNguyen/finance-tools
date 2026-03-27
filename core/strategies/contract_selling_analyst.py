@@ -187,6 +187,12 @@ class ContractSellingAnalyst:
             else:
                 x['blended_pillar_score'] = (norm_cap_eff * WHEEL_W_EFF) + (norm_density * WHEEL_W_DENSITY) + (norm_floor * WHEEL_W_FLOOR)
 
+            # --- Structural Support Multiplier ---
+            # Penalize strikes that have negligible GEX density (not a wall)
+            # This ensures the optimizer prefers a 'Wall' even if ROI is slightly lower.
+            if norm_density < 0.15:
+                x['blended_pillar_score'] *= 0.25
+
         # 2. Separate and Sort
         cash_strikes = [p for p in analyzed_list if p.get('strategy_tag') == "Cash Engine"]
         wheel_strikes = [p for p in analyzed_list if p.get('strategy_tag') == "Wheel Engine"]
@@ -223,12 +229,12 @@ class ContractSellingAnalyst:
         output_dict = {}
         
         if m_upper in ["BOTH", "SPLIT"]:
-            output_dict["Top_Wheel_Engine"] = format_output(wheel_ranked[:3])
-            output_dict["Top_Cash_Engine"] = format_output(cash_ranked[:3])
+            output_dict["Top_Wheel_Engine"] = format_output(wheel_ranked[:5])
+            output_dict["Top_Cash_Engine"] = format_output(cash_ranked[:5])
         elif m_upper == "WHEEL":
-            output_dict["Top_Wheel_Engine"] = format_output(wheel_ranked[:3])
+            output_dict["Top_Wheel_Engine"] = format_output(wheel_ranked[:5])
         elif m_upper == "CASH":
-            output_dict["Top_Cash_Engine"] = format_output(cash_ranked[:3])
+            output_dict["Top_Cash_Engine"] = format_output(cash_ranked[:5])
             
         return output_dict
 

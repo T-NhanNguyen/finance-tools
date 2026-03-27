@@ -100,14 +100,14 @@ SAFETY_BUFFER_TARGET = 0.20
 MIN_YIELD_THRESHOLD = 0.02
 
 
-# Cash Engine Weights (Prioritizes Safety and GEX Structure)
-CASH_W_DENSITY = 0.50
-CASH_W_FLOOR   = 0.30
-CASH_W_EFF     = 0.20
+# Cash Engine Weights (Prioritizes Structural Safety/GEX Walls)
+CASH_W_DENSITY = 0.70
+CASH_W_FLOOR   = 0.20
+CASH_W_EFF     = 0.10
 
-# Wheel Engine Weights (Prioritizes Extrinsic Efficiency and Premium)
-WHEEL_W_EFF     = 0.60
-WHEEL_W_DENSITY = 0.20
+# Wheel Engine Weights (Prioritizes structural support alongside premium)
+WHEEL_W_EFF     = 0.40
+WHEEL_W_DENSITY = 0.40
 WHEEL_W_FLOOR   = 0.20
 
 # Repair Velocity Factors (CC Proxy)

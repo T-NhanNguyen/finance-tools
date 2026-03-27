@@ -14,11 +14,22 @@ from core.data import (
 )
 from core.analysis import calculateGamma
 from visualizers.visualize_indicators import SLOPE_SENSITIVITY_RATIO
-from visualizers.visualize_gex import parse_flexible_date, OPTION_CHAIN_LENGTH
+from core.data.gex_provider import fetch_gex_data_raw, parse_flexible_date
+
+from core.strategies.contract_selling_analyst import ContractSellingAnalyst
+from core.strategies.portfolio_margin_allocator import (
+    PortfolioMarginAllocator, 
+    Position, 
+    optimize_allocation, 
+    simulate_multi_asset_portfolio
+)
+from core.strategies.strategy_config import LENDERS
 
 from .api_types import (
     GEXResponse, GEXStrikeData, IndicatorsResponse, 
-    IndicatorDataPoint, OBVTrendSegment, ErrorResponse
+    IndicatorDataPoint, OBVTrendSegment, ErrorResponse,
+    ContractSellingResponse, StrikeAnalysisData, PillarScoredPoint, ActionablePillars,
+    PortfolioMarginResponse, PortfolioPositionData
 )
 
 
@@ -29,162 +40,35 @@ from .api_types import (
 def getGEXData(ticker: str, expiration_input: Optional[str] = None) -> Dict:
     """
     Fetch GEX (Gamma Exposure) data and return structured JSON.
-    
-    Args:
-        ticker: Stock ticker symbol
-        expiration_input: Optional expiration date (YYYY-MM-DD, partial, or index)
-        
-    Returns:
-        Dictionary matching GEXResponse schema or ErrorResponse schema
+    Delegates core fetching and processing to core.data.gex_provider.
     """
     try:
-        ticker = ticker.upper()
+        data = fetch_gex_data_raw(ticker, expiration_input)
         
-        # Get all available expirations first
-        availableExpirations = getOptionExpirations(ticker)
-        if not availableExpirations:
+        if "error" in data:
             return ErrorResponse(
-                error="No option expirations found",
-                ticker=ticker,
-                details="This ticker may not have options available"
+                error=data["error"],
+                ticker=data.get("ticker", ticker),
+                details=data.get("details")
             ).model_dump()
-        
-        # Parse expiration date
-        expiration = parse_flexible_date(ticker, expiration_input)
-        if not expiration:
-            return ErrorResponse(
-                error="Could not parse expiration date",
-                ticker=ticker,
-                details=f"Input: {expiration_input}"
-            ).model_dump()
-        
-        # Fetch spot price
-        spotPrice = getCurrentPrice(ticker)
-        if not spotPrice:
-            return ErrorResponse(
-                error="Could not fetch current price",
-                ticker=ticker
-            ).model_dump()
-        
-        # Fetch option chain
-        chain = getOptionChain(ticker, expiration=expiration)
-        calls = chain.get('calls')
-        puts = chain.get('puts')
-        
-        if calls is None or puts is None:
-            return ErrorResponse(
-                error="Could not fetch option chain",
-                ticker=ticker,
-                details=f"Expiration: {expiration}"
-            ).model_dump()
-        
-        # Calculate time to expiration
-        today = datetime.now()
-        expiryDate = datetime.strptime(expiration, "%Y-%m-%d")
-        dteYears = max(1e-6, (expiryDate - today).total_seconds() / (365 * 24 * 3600))
-        daysToExpiration = (expiryDate - today).days
-        
-        # Calculate gammas for calls
-        callStrikes = calls['strike'].values
-        callIVs = calls['impliedVolatility'].values
-        callGammas = calculateGamma(spotPrice, callStrikes, dteYears, callIVs)
-        calls['gamma'] = callGammas
-        calls['gex'] = calls['gamma'] * calls['openInterest'] * 100 * spotPrice
-        
-        # Calculate gammas for puts (negative from MM perspective)
-        putStrikes = puts['strike'].values
-        putIVs = puts['impliedVolatility'].values
-        putGammas = calculateGamma(spotPrice, putStrikes, dteYears, putIVs)
-        puts['gamma'] = putGammas
-        puts['gex'] = -puts['gamma'] * puts['openInterest'] * 100 * spotPrice
-        
-        # Aggregate by strike
-        callsAgg = calls[['strike', 'gex', 'openInterest', 'bid', 'ask', 'impliedVolatility']].groupby('strike').agg({
-            'gex': 'sum',
-            'openInterest': 'sum',
-            'bid': 'first',
-            'ask': 'first',
-            'impliedVolatility': 'first'
-        }).reset_index()
-        
-        putsAgg = puts[['strike', 'gex', 'openInterest', 'bid', 'ask', 'impliedVolatility']].groupby('strike').agg({
-            'gex': 'sum',
-            'openInterest': 'sum',
-            'bid': 'first',
-            'ask': 'first',
-            'impliedVolatility': 'first'
-        }).reset_index()
-
-        # Merge call and put data on strike
-        combinedAgg = pd.merge(
-            callsAgg,
-            putsAgg,
-            on='strike',
-            how='outer',
-            suffixes=('_call', '_put')
-        ).fillna(0.0)
-        
-        # Calculate combined aggregates
-        combinedAgg['totalGEX'] = combinedAgg['gex_call'] + combinedAgg['gex_put']
-        combinedAgg['totalOI'] = combinedAgg['openInterest_call'] + combinedAgg['openInterest_put']
-        
-        # Filter for strikes around ATM
-        combinedAgg = combinedAgg.sort_values('strike').reset_index(drop=True)
-        atmIdx = (combinedAgg['strike'] - spotPrice).abs().idxmin()
-        
-        startIdx = max(0, atmIdx - OPTION_CHAIN_LENGTH)
-        endIdx = min(len(combinedAgg), atmIdx + OPTION_CHAIN_LENGTH + 1)
-        plotDf = combinedAgg.iloc[startIdx:endIdx].copy()
-        
-        # Find max values for normalization
-        maxGEXAbsolute = float(plotDf['totalGEX'].abs().max() or 1)
-        maxOpenInterest = float(plotDf['totalOI'].max() or 1)
-        
-        # Find ATM strike
-        atmStrike = plotDf.iloc[(plotDf['strike'] - spotPrice).abs().argsort()[:1]]['strike'].values[0]
-        
-        # Build strike data
-        strikes = []
-        for _, row in plotDf.iterrows():
-            strike = float(row['strike'])
-            gexM = float(row['totalGEX'] / 1e6)
-            oiK = float(row['totalOI'] / 1e3)
             
-            # Normalized values for frontend charting
-            normGEX = float(row['totalGEX'] / maxGEXAbsolute)
-            normOI = float(row['totalOI'] / maxOpenInterest)
-            
-            strikes.append(GEXStrikeData(
-                strike=strike,
-                gexMillions=gexM,
-                openInterestThousands=oiK,
-                isATM=(strike == atmStrike),
-                normalizedGEX=normGEX,
-                normalizedOI=normOI,
-                callBid=float(row['bid_call']),
-                callAsk=float(row['ask_call']),
-                callIV=float(row['impliedVolatility_call']),
-                callOI=float(row['openInterest_call'] / 1e3),
-                putBid=float(row['bid_put']),
-                putAsk=float(row['ask_put']),
-                putIV=float(row['impliedVolatility_put']),
-                putOI=float(row['openInterest_put'] / 1e3)
-            ))
+        # Wrap the raw data in GEXResponse model
+        strikes = [GEXStrikeData(**s) for s in data["strikes"]]
         
         return GEXResponse(
-            ticker=ticker,
-            expiration=expiration,
-            spotPrice=float(spotPrice),
-            daysToExpiration=daysToExpiration,
+            ticker=data["ticker"],
+            expiration=data["expiration"],
+            spotPrice=data["spotPrice"],
+            daysToExpiration=data["daysToExpiration"],
             strikes=strikes,
-            maxGEXAbsolute=maxGEXAbsolute,
-            maxOpenInterest=maxOpenInterest,
-            availableExpirations=availableExpirations
+            maxGEXAbsolute=data["maxGEXAbsolute"],
+            maxOpenInterest=data["maxOpenInterest"],
+            availableExpirations=data["availableExpirations"]
         ).model_dump()
         
     except Exception as exc:
         return ErrorResponse(
-            error="Internal server error",
+            error="Internal server error in getGEXData",
             ticker=ticker,
             details=str(exc)
         ).model_dump()
@@ -386,10 +270,102 @@ def getIndicatorsData(
             averageDailyVolume=averageDailyVolume,
             dynamicSlopeThreshold=dynamicSlopeThreshold
         ).model_dump()
+    except Exception as exc:
+        return ErrorResponse(
+            error="Internal server error in getIndicatorsData",
+            ticker=ticker,
+            details=str(exc)
+        ).model_dump()
+
+
+# ============================================================================
+# Contract Selling Handler
+# ============================================================================
+
+def getContractSellingData(
+    ticker: str, 
+    strategy: str = "CSP", 
+    engine: str = "BOTH", 
+    expiration: Optional[str] = None
+) -> Dict:
+    """
+    Fetch Contract Selling analysis and return structured JSON.
+    """
+    try:
+        cash_equity = sum(LENDERS)
+        analyst = ContractSellingAnalyst(cash_equity=cash_equity)
+        result = analyst.scan(
+            ticker.upper(), 
+            expiration_input=expiration, 
+            strategy_type=strategy.upper(), 
+            engine_mode=engine.upper()
+        )
+        
+        if "error" in result:
+            return ErrorResponse(
+                error=result["error"],
+                ticker=ticker,
+                details=result.get("details")
+            ).model_dump()
+            
+        return ContractSellingResponse(**result).model_dump()
         
     except Exception as exc:
         return ErrorResponse(
-            error="Internal server error",
+            error="Internal server error in ContractSellingAnalyst",
             ticker=ticker,
+            details=str(exc)
+        ).model_dump()
+
+
+# ============================================================================
+# Portfolio Margin Simulation Handler
+# ============================================================================
+
+def getPortfolioSimulationData(
+    tickers: List[str], 
+    strategy: str = "CSP", 
+    expiration: Optional[str] = None
+) -> Dict:
+    """
+    Simulate shared portfolio margin allocation across multiple tickers.
+    Delegates calculation and scan-execution to PortfolioMarginAllocator.simulate_multi_asset_portfolio
+    """
+    try:
+        portfolio = simulate_multi_asset_portfolio(
+            tickers=tickers,
+            strategy_type=strategy,
+            expiration=expiration
+        )
+
+        api_positions = [
+            PortfolioPositionData(
+                ticker=p.ticker,
+                strike=p.strike,
+                contracts=p.contracts,
+                notional=p.notional,
+                premium_collected=p.premium_collected,
+                strategy_type=p.strategy_type,
+                maint_req=p.maint_req,
+                status=p.status
+            )
+            for p in portfolio.positions
+        ]
+
+        return PortfolioMarginResponse(
+            cash=portfolio.cash,
+            accumulated_premiums=portfolio.accumulated_premiums,
+            total_equity=portfolio.total_equity,
+            tightest_req=portfolio.tightest_req,
+            margin_limit=portfolio.margin_limit,
+            total_notional=portfolio.total_notional,
+            cash_utilized=portfolio.cash_utilized,
+            margin_utilized=portfolio.margin_utilized,
+            positions=api_positions
+        ).model_dump()
+        
+    except Exception as exc:
+        return ErrorResponse(
+            error="Portfolio simulation failed",
             details=str(exc)
         ).model_dump()

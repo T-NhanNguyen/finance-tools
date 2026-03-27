@@ -9,7 +9,7 @@ import time
 import threading
 from typing import List, Dict, Optional
 from concurrent.futures import ThreadPoolExecutor
-from api.api_handlers import getGEXData
+from core.data.gex_provider import fetch_gex_data_raw
 
 CACHE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".gex_cache"))
 CACHE_EXPIRY = 900  # 15 minutes (900 seconds)
@@ -66,7 +66,7 @@ def fetch_gex_single(ticker: str, expiration: Optional[str] = None) -> Dict:
         last_result = {"error": f"All {MAX_FETCH_RETRIES} fetch attempts failed", "ticker": ticker}
         for attempt in range(MAX_FETCH_RETRIES):
             time.sleep(FETCH_STAGGER_DELAY * (2 ** attempt))
-            data = getGEXData(ticker, expiration)
+            data = fetch_gex_data_raw(ticker, expiration)
             if "error" not in data:
                 strikes = data.get("strikes", [])
                 total_bids = sum((s.get("putBid", 0) or 0) + (s.get("callBid", 0) or 0) for s in strikes)
@@ -94,3 +94,41 @@ def fetch_gex_bulk(tickers: List[str], expiration: Optional[str] = None, max_wor
             results[t] = data
 
     return results
+
+
+def run_bulk_loader():
+    """
+    CLI interface for bulk GEX data fetching and caching.
+    """
+    import argparse
+    parser = argparse.ArgumentParser(description="Bulk GEX Data Loader & Caching Utility")
+    parser.add_argument("tickers", nargs="*", help="List of tickers to fetch (e.g., SPY QQQ)")
+    parser.add_argument("--expiration", help="Expiration date (YYYY-MM-DD or index)")
+    parser.add_argument("--workers", type=int, default=10, help="Max concurrent workers")
+    args = parser.parse_args()
+
+    # Default tickers if none provided
+    tickers = [t.upper() for t in args.tickers] if args.tickers else ["SPY", "QQQ"]
+    print(f"\n{'='*60}")
+    print(f"Bulk Fetching GEX for: {', '.join(tickers)}")
+    print(f"Expiration Filter: {args.expiration or 'Nearest'}")
+    print(f"{'='*60}\n")
+    
+    start_time = time.time()
+    results = fetch_gex_bulk(tickers, expiration=args.expiration, max_workers=args.workers)
+    elapsed = float(time.time() - start_time)
+    
+    print("-" * 60)
+    for t in tickers:
+        data = results.get(t, {})
+        if "error" in data:
+            status = f"\033[91mFAILED\033[0m - {data['error']}"
+        else:
+            status = f"\033[92mOK\033[0m - {len(data.get('strikes', []))} strikes cached"
+        print(f"{t:<6}: {status}")
+    print("-" * 60)
+    print(f"Total time: {elapsed:.2f}s")
+    print(f"{'='*60}\n")
+
+if __name__ == "__main__":
+    run_bulk_loader()
