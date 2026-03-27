@@ -148,7 +148,7 @@ class PillarScoredPoint(BaseModel):
     Post_Tax_ROI: str = Field(description="Formatted post tax yield")
     WTZ_Weeks: float = Field(description="Estimated weeks to zero cost basis")
     Cap_Efficiency: float = Field(description="Capital efficiency ratio")
-    Extrinsic_Premium: float = Field(description="Extrinsic premium value")
+    Extrinsic_Premium: Optional[float] = Field(None, description="Extrinsic premium value")
     Total_Premium: float = Field(description="Total premium Collected")
     Eff_Cost_Basis: float = Field(description="Effective cost basis Mapping break-even value")
     Contracts: int = Field(description="Number of contracts mappings")
@@ -190,19 +190,22 @@ class PortfolioPositionData(BaseModel):
     notional: float = Field(description="Total notional value of position")
     premium_collected: float = Field(description="Premium collected per contract")
     strategy_type: str = Field(description="Strategy type (CSP/CC)")
+    initial_req: float = Field(description="Initial margin requirement coefficient")
     maint_req: float = Field(description="Maintenance margin requirement coefficient")
+    spot_at_entry: float = Field(description="Current asset price at time of mock entry simulation")
+    margin_call_floor: float = Field(description="Calculated floor price at which this specific position triggers a maintenance call after assignment")
     status: Optional[str] = Field(None, description="Simulation outcome (FULL DEPLOYMENT, SCALED DOWN, etc.)")
 
 class PortfolioMarginResponse(BaseModel):
     """API Response dataset covering absolute allocations across the shared pool"""
     cash: float = Field(description="Base cash equity available")
     accumulated_premiums: float = Field(description="Total premiums collected from allocation")
-    total_equity: float = Field(description="Combined cash and accumulated premiums")
-    tightest_req: float = Field(description="Tightest maintenance requirement bound")
-    margin_limit: float = Field(description="Calculated margin borrowing limit ceiling")
+    total_review_equity: float = Field(description="Combined cash and accumulated premiums for risk calculation")
     total_notional: float = Field(description="Total notional across all positions")
-    cash_utilized: float = Field(description="Equity deployed as cash layer collateral")
-    margin_utilized: float = Field(description="Leverage deployed in margin layer")
+    total_initial_margin: float = Field(description="Sum of all entry collateral requirements")
+    total_maintenance_margin: float = Field(description="Sum of all ongoing maintenance requirements")
+    total_assignment_exposure: float = Field(description="Total cash needed if all positions assigned")
+    buying_power_remaining: float = Field(description="Estimated additional notional room")
     positions: List[PortfolioPositionData] = Field(default_factory=list, description="Optimal position combination breakdown")
 
 

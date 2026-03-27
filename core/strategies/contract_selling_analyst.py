@@ -262,12 +262,10 @@ class ContractSellingAnalyst:
         # Extract ATM Weekly Premium Benchmark from the already-fetched chain
         atm_weekly_premium = _extract_atm_premium(strikes, spot_price, strategy_type)
         margin_info = MARGIN_REQS.get(ticker.upper(), MARGIN_REQS.get("DEFAULT", {}))
-        if strategy_type.upper() == "CSP":
-            init_req = margin_info.get("initial_long", DEFAULT_MARGIN_REQ)
-            maint_req = margin_info.get("maint_long", DEFAULT_MARGIN_REQ)
-        else: # CC
-            init_req = margin_info.get("initial_short", DEFAULT_MARGIN_REQ)
-            maint_req = margin_info.get("maint_short", DEFAULT_MARGIN_REQ) 
+        # Both CSP and CC are short-option strategies (selling premium)
+        # and should use the broker's 'short' margin requirements.
+        init_req = margin_info.get("initial_short", DEFAULT_MARGIN_REQ)
+        maint_req = margin_info.get("maint_short", DEFAULT_MARGIN_REQ)
 
         cash_req = calculate_cash_requirement(spot_price, init_req, maint_req)
         effective_capital = (self.cash_equity / cash_req) * spot_price if cash_req > 0 else self.total_working_capital

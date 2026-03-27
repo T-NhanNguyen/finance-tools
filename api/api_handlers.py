@@ -1,6 +1,6 @@
 """
 API Handler Functions
-Converts visualization scripts to return structured JSON data for HTTP responses.
+Converts core data and strategy modules into structured JSON responses.
 """
 
 import numpy as np
@@ -9,11 +9,9 @@ from typing import List, Dict, Optional
 from datetime import datetime
 
 from core.data import (
-    getOptionChain, getOptionExpirations, getCurrentPrice, PricePeriod, PriceInterval,
+    PricePeriod, PriceInterval,
     getIndicators, IndicatorType, generateTradingSignals, getTrendSegments, _getPiecewiseBoundaries, calculateTheilSenSlope, MINIMUM_SEGMENT_LENGTH
 )
-from core.analysis import calculateGamma
-from visualizers.visualize_indicators import SLOPE_SENSITIVITY_RATIO
 from core.data.gex_provider import fetch_gex_data_raw, parse_flexible_date
 
 from core.strategies.contract_selling_analyst import ContractSellingAnalyst
@@ -319,7 +317,7 @@ def getContractSellingData(
 
 
 # ============================================================================
-# Portfolio Margin Simulation Handler
+# Portfolio Simulation Handler
 # ============================================================================
 
 def getPortfolioSimulationData(
@@ -369,3 +367,69 @@ def getPortfolioSimulationData(
             error="Portfolio simulation failed",
             details=str(exc)
         ).model_dump()
+
+
+# ============================================================================
+# Portfolio Allocation Handler (Legacy/Manual)
+# ============================================================================
+
+def optimizePortfolioAllocation(cash: float, candidates: List[Dict]) -> Dict:
+    """Solve for optimal multi-asset allocation across a shared collateral pool using raw candidate lists."""
+    try:
+        # 1. Setup allocator
+        allocator = PortfolioMarginAllocator(cash=cash)
+        
+        # 2. Convert raw candidate dicts back into Position objects for core logic
+        candidate_objs = []
+        for c in candidates:
+            candidate_objs.append(Position(
+                ticker=c['ticker'],
+                strike=c['strike'],
+                contracts=c['contracts'],
+                premium_collected=c['premium_collected'],
+                strategy_type=c.get('strategy_type', 'CSP'),
+                initial_req=c.get('initial_req'),
+                maint_req=c.get('maint_req'),
+                spot_at_entry=c.get('spot_at_entry', 0)
+            ))
+            
+        # 3. Solve 0-1 Knapsack
+        # Note: optimize_allocation now returns a list of Position objects with sizes decided
+        optimal_allocs = optimize_allocation(allocator, candidate_objs)
+        
+        # 4. Build return payload
+        out_positions = []
+        acc_prem = 0.0
+        for orig, opt in zip(candidate_objs, optimal_allocs):
+            if opt.contracts > 0:
+                status = "FULL DEPLOYMENT" if opt.contracts == orig.contracts else f"SCALED DOWN from {orig.contracts}"
+                p_data = PortfolioPositionData(
+                    ticker=opt.ticker,
+                    strike=opt.strike,
+                    contracts=opt.contracts,
+                    notional=opt.notional,
+                    premium_collected=opt.premium_collected,
+                    strategy_type=opt.strategy_type,
+                    maint_req=opt.maint_req,
+                    status=status
+                )
+                out_positions.append(p_data)
+                acc_prem += opt.contracts * opt.premium_collected * 100
+                allocator.positions.append(opt)
+        
+        allocator.accumulated_premiums = acc_prem
+        
+        return PortfolioMarginResponse(
+            cash=allocator.cash,
+            accumulated_premiums=allocator.accumulated_premiums,
+            total_equity=allocator.total_equity,
+            tightest_req=allocator.tightest_req,
+            margin_limit=allocator.margin_limit,
+            total_notional=allocator.total_notional,
+            cash_utilized=allocator.cash_utilized,
+            margin_utilized=allocator.margin_utilized,
+            positions=out_positions
+        ).model_dump()
+        
+    except Exception as e:
+        return ErrorResponse(error="Allocation Error", details=str(e)).model_dump()
