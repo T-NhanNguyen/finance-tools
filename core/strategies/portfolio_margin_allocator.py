@@ -15,6 +15,41 @@ from core.strategies.strategy_config import MARGIN_REQS, DEFAULT_MARGIN_REQ, LEN
 from core.strategies.contract_selling_analyst import ContractSellingAnalyst
 
 # =============================================================================
+# CBOE/FINRA REG-T SHORT OPTION MARGIN FORMULA
+# Ref: CBOE strategy-based margin rules for naked short equity puts.
+# Broker-specific rates from MARGIN_REQS replace the standard 20%/10% values.
+# =============================================================================
+
+REG_T_DEFAULT_SHORT = 0.20  # standard 20% of underlying (initial/maint short rate)
+REG_T_DEFAULT_FLOOR = 0.10  # standard 10% floor (initial/maint long rate)
+
+
+def calc_short_put_initial_margin_per_contract(
+    underlying: float, strike: float, premium: float, ticker: str
+) -> float:
+    """CBOE initial margin for one short put contract, broker-rate-adjusted."""
+    margin_info = MARGIN_REQS.get(ticker.upper(), {})
+    rate_short = margin_info.get("initial_short", REG_T_DEFAULT_SHORT)
+    rate_floor = margin_info.get("initial_long",  REG_T_DEFAULT_FLOOR)
+    otm = max(underlying - strike, 0)
+    leg1 = premium + rate_short * underlying - otm
+    leg2 = premium + rate_floor * strike
+    return max(leg1, leg2) * 100
+
+
+def calc_short_put_maint_margin_per_contract(
+    underlying: float, strike: float, option_market_value: float, ticker: str
+) -> float:
+    """CBOE maintenance margin for one short put contract, broker-rate-adjusted."""
+    margin_info = MARGIN_REQS.get(ticker.upper(), {})
+    rate_short = margin_info.get("maint_short", REG_T_DEFAULT_SHORT)
+    rate_floor = margin_info.get("maint_long",  REG_T_DEFAULT_FLOOR)
+    otm = max(underlying - strike, 0)
+    leg1 = option_market_value + rate_short * underlying - otm
+    leg2 = option_market_value + rate_floor * strike
+    return max(leg1, leg2) * 100
+
+# =============================================================================
 # POSITION
 # =============================================================================
 
@@ -64,13 +99,19 @@ class Position:
 
     @property
     def initial_margin_required(self) -> float:
-        """Margin collateral held by broker at entry."""
-        return self.notional * self.initial_req
+        """CBOE Reg-T initial margin for all contracts in this position."""
+        per_contract = calc_short_put_initial_margin_per_contract(
+            self.spot_at_entry, self.strike, self.premium_collected, self.ticker
+        )
+        return per_contract * self.contracts
 
     @property
     def maintenance_margin_required(self) -> float:
-        """Ongoing margin collateral requirement."""
-        return self.notional * self.maint_req
+        """CBOE Reg-T maintenance margin using entry premium as market value proxy."""
+        per_contract = calc_short_put_maint_margin_per_contract(
+            self.spot_at_entry, self.strike, self.premium_collected, self.ticker
+        )
+        return per_contract * self.contracts
 
 
 # =============================================================================
@@ -93,8 +134,8 @@ class PortfolioMarginAllocator:
 
     @property
     def total_initial_margin(self) -> float:
-        """Sum of all entry margin requirements."""
-        return sum(p.initial_margin_required for p in self.positions)
+        """Sum of all entry margin requirements across active positions."""
+        return sum(p.initial_margin_required for p in self.positions if p.contracts > 0)
 
     @property
     def tightest_req(self) -> float:
@@ -128,10 +169,14 @@ class PortfolioMarginAllocator:
         return self.total_maintenance_margin
 
     @property
+    def initial_margin_headroom(self) -> float:
+        """Equity remaining after subtracting all initial margin requirements."""
+        return max(0, self.total_equity - self.total_initial_margin)
+
+    @property
     def buying_power_remaining(self) -> float:
         """Approximate amount of additional notional that can be carried at 50% avg req."""
-        available_equity = max(0, self.total_equity - self.total_initial_margin)
-        return available_equity * 2.0
+        return self.initial_margin_headroom * 2.0
 
     @property
     def total_notional(self) -> float:
@@ -165,96 +210,93 @@ class PortfolioMarginAllocator:
         
         margin_pct = (self.margin_utilized / self.margin_limit * 100) if self.margin_limit else 0
         cash_pct = (self.cash_utilized / self.total_equity * 100) if self.total_equity else 0
+        init_pct = (self.total_initial_margin / self.total_equity * 100) if self.total_equity else 0
         
-        print(f"  Cash Layer:   ${self.cash_utilized:>12,.2f} / ${self.total_equity:,.2f}  ({cash_pct:.1f}% used)")
-        print(f"  Margin Layer: ${self.margin_utilized:>12,.2f} / ${self.margin_limit:,.2f}  ({margin_pct:.1f}% used)")
-        print(f"  Remaining BP: ${self.buying_power_remaining:>12,.2f}  (est. @ 50% req)")
+        print(f"  Cash Layer:     ${self.cash_utilized:>12,.2f} / ${self.total_equity:,.2f}  ({cash_pct:.1f}% used)")
+        print(f"  Initial Margin: ${self.total_initial_margin:>12,.2f} / ${self.total_equity:,.2f}  ({init_pct:.1f}% used) ← IBKR entry gate")
+        print(f"  Maint. Margin:  ${self.margin_utilized:>12,.2f} / ${self.margin_limit:,.2f}  ({margin_pct:.1f}% used)")
+        print(f"  Remaining BP:   ${self.buying_power_remaining:>12,.2f}  (est. @ 50% req)")
         print(f"  Assignment Exposure: ${self.total_assignment_exposure:>12,.2f}")
         print(f"{'='*82}\n")
 
 
 def optimize_allocation(allocator: PortfolioMarginAllocator, candidates: List[Position]) -> List[Position]:
     """
-    Solves the multidimensional knapsack problem for optimal contract sizing across overlapping constraints.
-    Maximizes total premium collected while strictly respecting the tiered cash and margin limits.
-    Now supports Multiple-Choice Knapsack (MCK) to ensure mutual exclusivity between different strikes for the same ticker.
+    Solves the 2D multidimensional knapsack problem for optimal contract sizing.
+    Dimension 1 (initial margin): Sum of formula-based initial margin ≤ total equity (IBKR entry gate).
+    Dimension 2 (maint margin):   Sum of formula-based maint margin  ≤ total equity (ongoing holding).
+    Both weights are in absolute dollars from the Reg-T formula, so no outer unique_reqs loop is needed.
+    Supports MCK to ensure mutual exclusivity between different strikes for the same ticker.
     """
     best_premium = -1.0
     best_counts = {i: 0 for i in range(len(candidates))}
-    E0 = allocator.cash
+    E0 = allocator.total_equity
 
-    # Solver iterates through candidate maintenance requirements to find the global optimum
-    # across different risk buckets.
-    unique_reqs = sorted(list(set(c.maint_req for c in candidates)))
+    items = []
+    for i, c in enumerate(candidates):
+        w_init  = calc_short_put_initial_margin_per_contract(
+            c.spot_at_entry, c.strike, c.premium_collected, c.ticker
+        )
+        w_maint = calc_short_put_maint_margin_per_contract(
+            c.spot_at_entry, c.strike, c.premium_collected, c.ticker
+        )
+        v   = 100 * c.premium_collected * c.pillar_score
+        cap = c.contracts
+        items.append((i, w_init, w_maint, v, cap))
 
-    for M in unique_reqs:
-        valid_indices = [i for i, c in enumerate(candidates) if c.maint_req <= M]
-        if not valid_indices: continue
+    # Sort by value density (premium per dollar of initial margin) for pruning heuristic
+    items.sort(key=lambda x: x[3] / x[1] if x[1] > 0 else float('inf'), reverse=True)
 
-        items = []
-        for i in valid_indices:
-            c = candidates[i]
-            # Weight: adjusted notional requirement (buying power consumed)
-            # Math: w = count * 100 * (strike - premium/M)
-            # This ensures we don't violate the margin call threshold (Floor P_call).
-            w = 100 * (c.strike - c.premium_collected / M)
-            # Value: Risk-Adjusted Premium (Premium * Pillar Score)
-            v = 100 * c.premium_collected * c.pillar_score
-            cap = c.contracts
-            items.append((i, w, v, cap))
+    # Group by ticker to enforce mutual exclusivity (Multiple-Choice Knapsack)
+    ticker_groups: dict = {}
+    for i, w_i, w_m, v, cap in items:
+        t = candidates[i].ticker
+        if t not in ticker_groups: ticker_groups[t] = []
+        ticker_groups[t].append((i, w_i, w_m, v, cap))
 
-        # Sort by best intrinsic capital efficiency for pruning
-        items.sort(key=lambda x: x[2] / x[1] if x[1] > 0 else float('inf'), reverse=True)
-        capacity = E0 / M
+    group_list = list(ticker_groups.values())
 
-        # Group items by ticker to enforce mutual exclusivity (Multiple-Choice Knapsack)
-        ticker_groups = {}
-        for i, w, v, cap in items:
-            t = candidates[i].ticker
-            if t not in ticker_groups: ticker_groups[t] = []
-            ticker_groups[t].append((i, w, v, cap))
-        
-        group_list = list(ticker_groups.values())
+    def dfs(group_idx: int, used_init: float, used_maint: float, current_v: float, counts: dict):
+        nonlocal best_premium, best_counts
+        if group_idx == len(group_list):
+            if current_v > best_premium:
+                best_premium = current_v
+                for i in range(len(candidates)):
+                    best_counts[i] = counts.get(i, 0)
+            return
 
-        def dfs(group_idx: int, current_w: float, current_v: float, counts: dict):
-            nonlocal best_premium, best_counts
-            if group_idx == len(group_list):
-                if current_v > best_premium:
-                    best_premium = current_v
-                    for i in range(len(candidates)):
-                        best_counts[i] = counts.get(i, 0)
-                return
+        # Upper bound heuristic: greedy relaxation on initial margin remaining
+        rem_init = E0 - used_init
+        ub = current_v
+        for next_g_idx in range(group_idx, len(group_list)):
+            max_v_in_group = 0
+            for _, nw_i, _, nv, ncap in group_list[next_g_idx]:
+                if nw_i <= 0:
+                    max_v_in_group = max(max_v_in_group, ncap * nv)
+                else:
+                    take = min(ncap, rem_init / nw_i)
+                    max_v_in_group = max(max_v_in_group, take * nv)
+            ub += max_v_in_group
 
-            # Upper bound heuristic for pruning (Greedy Relaxation)
-            rem_cap = capacity - current_w
-            ub = current_v
-            for next_g_idx in range(group_idx, len(group_list)):
-                max_v_in_group = 0
-                for _, nw, nv, ncap in group_list[next_g_idx]:
-                    if nw <= 0:
-                        max_v_in_group = max(max_v_in_group, ncap * nv)
-                    else:
-                        take = min(ncap, rem_cap / nw)
-                        max_v_in_group = max(max_v_in_group, take * nv)
-                ub += max_v_in_group
-            
-            if ub <= best_premium: return
+        if ub <= best_premium: return
 
-            # Option 1: Skip this ticker entirely
-            dfs(group_idx + 1, current_w, current_v, counts)
+        # Option 1: Skip this ticker entirely
+        dfs(group_idx + 1, used_init, used_maint, current_v, counts)
 
-            # Option 2: Try each strike in this ticker group (Must choose at most one strike per ticker)
-            for orig_i, w, v, cap in group_list[group_idx]:
-                max_take = cap
-                if w > 0: 
-                    max_take = min(max_take, int((capacity - current_w) / w))
-                
-                if max_take > 0:
-                    counts[orig_i] = max_take
-                    dfs(group_idx + 1, current_w + max_take * w, current_v + max_take * v, counts)
-                    counts[orig_i] = 0
+        # Option 2: Try each strike (at most one per ticker)
+        for orig_i, w_i, w_m, v, cap in group_list[group_idx]:
+            max_take = cap
+            if w_i > 0:
+                max_take = min(max_take, int((E0 - used_init)  / w_i))
+            if w_m > 0:
+                max_take = min(max_take, int((E0 - used_maint) / w_m))
 
-        dfs(0, 0.0, 0.0, {})
+            if max_take > 0:
+                counts[orig_i] = max_take
+                dfs(group_idx + 1, used_init + max_take * w_i, used_maint + max_take * w_m, current_v + max_take * v, counts)
+                counts[orig_i] = 0
+
+    dfs(0, 0.0, 0.0, 0.0, {})
 
     optimal_positions = []
     for i, c in enumerate(candidates):

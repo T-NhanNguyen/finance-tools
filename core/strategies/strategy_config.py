@@ -76,7 +76,8 @@ MARGIN_REQS = {
     "NBIS": {"initial_long": 0.3162, "maint_long": 0.2875, "initial_short": 0.3162, "maint_short": 0.30},
     "NEBX": {"initial_long": 0.30, "maint_long": 0.30, "initial_short": 0.30, "maint_short": 0.30},
     "IREN": {"initial_long": 0.3962, "maint_long": 0.3602, "initial_short": 0.3962, "maint_short": 0.3602},
-    "BE": {"initial_long": 0.3667, "maint_long": 0.3243, "initial_short": 0.3667, "maint_short": 0.3243},
+    # BE: IBKR observed $163,652 initial margin for 17×$125 puts (2026-03-27). Per-share = $96.27, rate = 77%.
+    "BE": {"initial_long": 0.3667, "maint_long": 0.3243, "initial_short": 0.7702, "maint_short": 0.3243},
     "WULF": {"initial_long": 0.4202, "maint_long": 0.3822, "initial_short": 0.4202, "maint_short": 0.3822},
     "AAOI": {"initial_long": 0.7167, "maint_long": 0.4809, "initial_short": 0.5289, "maint_short": 0.4809},
     "PLTR": {"initial_long": 0.2500, "maint_long": 0.2500, "initial_short": 0.3000, "maint_short": 0.3000},
