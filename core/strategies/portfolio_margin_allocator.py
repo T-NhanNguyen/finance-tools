@@ -13,41 +13,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 from core.strategies.strategy_config import MARGIN_REQS, DEFAULT_MARGIN_REQ, LENDERS
 from core.strategies.contract_selling_analyst import ContractSellingAnalyst
-
-# =============================================================================
-# CBOE/FINRA REG-T SHORT OPTION MARGIN FORMULA
-# Ref: CBOE strategy-based margin rules for naked short equity puts.
-# Broker-specific rates from MARGIN_REQS replace the standard 20%/10% values.
-# =============================================================================
-
-REG_T_DEFAULT_SHORT = 0.20  # standard 20% of underlying (initial/maint short rate)
-REG_T_DEFAULT_FLOOR = 0.10  # standard 10% floor (initial/maint long rate)
-
-
-def calc_short_put_initial_margin_per_contract(
-    underlying: float, strike: float, premium: float, ticker: str
-) -> float:
-    """CBOE initial margin for one short put contract, broker-rate-adjusted."""
-    margin_info = MARGIN_REQS.get(ticker.upper(), {})
-    rate_short = margin_info.get("initial_short", REG_T_DEFAULT_SHORT)
-    rate_floor = margin_info.get("initial_long",  REG_T_DEFAULT_FLOOR)
-    otm = max(underlying - strike, 0)
-    leg1 = premium + rate_short * underlying - otm
-    leg2 = premium + rate_floor * strike
-    return max(leg1, leg2) * 100
-
-
-def calc_short_put_maint_margin_per_contract(
-    underlying: float, strike: float, option_market_value: float, ticker: str
-) -> float:
-    """CBOE maintenance margin for one short put contract, broker-rate-adjusted."""
-    margin_info = MARGIN_REQS.get(ticker.upper(), {})
-    rate_short = margin_info.get("maint_short", REG_T_DEFAULT_SHORT)
-    rate_floor = margin_info.get("maint_long",  REG_T_DEFAULT_FLOOR)
-    otm = max(underlying - strike, 0)
-    leg1 = option_market_value + rate_short * underlying - otm
-    leg2 = option_market_value + rate_floor * strike
-    return max(leg1, leg2) * 100
+from core.analysis.csp_math_engine import (
+    calc_short_put_initial_margin_per_contract,
+    calc_short_put_maint_margin_per_contract
+)
 
 # =============================================================================
 # POSITION

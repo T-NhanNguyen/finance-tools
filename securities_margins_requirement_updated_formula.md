@@ -1,91 +1,53 @@
-Below is a clean way to update your algorithm for **Reg T naked short puts** on **equity / narrow-based index options**.
+# Securities Margin Requirements for Portfolio Allocation
 
-## Formula
+This document details the transition from flat-rate margin approximations to the CBOE and FINRA Reg-T short option margin formula, integrated with broker-specific requirements from the strategy configuration.
 
-For one short put contract:
+## Background on Allocation Errors
 
-$$
-\text{Margin per contract} = \max\Big(
-P + 0.20S - \text{OTM},\;
-P + 0.10K
-\Big) \times 100
-$$
+The move to a precise margin formula was triggered by a discrepancy observed in ticker BE. With approximately 113,000 in total equity, the initial flat-rate algorithm suggested selling 17 contracts at a 125 strike. However, the broker (IBKR) rejected the order, suggesting only 11 contracts were permissible.
+
+The flat-rate approximation calculated capacity as notional divided by maintenance requirement (approximately 348,000 capacity). In reality, brokers enforce a non-linear margin gate at order entry that is significantly more restrictive than the maintenance requirement. For BE, the actual margin impact was approximately 96 per share, or 77 percent of the strike price, far exceeding the 32 percent used in the simulation.
+
+## Core Margin Formula
+
+The correct calculation for a single naked short put contract follows the CBOE strategy-based margin rules, substituted with ticker-specific rates from the internal margin requirement data.
+
+The initial margin per contract is the maximum of two separate legs:
+
+Leg 1: Option Premium + (Short Rate * Underlying Price) - Out of the Money Amount
+Leg 2: Option Premium + (Floor Rate * Strike Price)
 
 Where:
+- Option Premium is the mid-price per share.
+- Short Rate is the initial_short requirement (e.g., 0.3012 for UUUU).
+- Floor Rate is the initial_long requirement (the 10 percent regulatory floor).
+- Out of the Money Amount (OTM) is max(Underlying Price - Strike, 0) for puts.
 
-- $P$ = option premium per share
-- $S$ = current underlying stock price per share
-- $K$ = put strike price per share
-- $\text{OTM} = \max(S - K, 0)$ for a put
-- 100 = standard contract multiplier
+## Common Pitfalls in Implementation
 
-This matches the Cboe strategy-based margin rule for short equity puts: **100% of option proceeds plus 20% of underlying value less any out-of-the-money amount, with a minimum of option proceeds plus 10% of the put exercise price**.[^1]
+The most frequent error in margin modeling is using a flat percentage against the total notional value. This fails to account for the premium received (which offsets the requirement) and the OTM credit (which reduces the risk as the underlying moves away from the strike).
 
-FINRA Rule 4210 allows broker-dealers to impose requirements that are **higher than the minimums**, so your broker may still reject a trade even if this formula says it should fit.[^2][^3]
+A second common mistake occurred during the regression phase: using the Reg-T formula directly to determine contract counts in the scanner. While the formula represents the hard ceiling the broker enforces, using it as an allocation target provides zero safety buffer. This leads to over-allocation where the theoretical capacity is filled to the absolute dollar, leaving the portfolio vulnerable to small price fluctuations that trigger immediate margin calls.
 
-## Position-level version
+Others may also go wrong by failing to thread the specific ticker context through the math engine. Without the ticker, the algorithm defaults to standard 20 percent and 10 percent coefficients, which will significantly underestimate the requirements for high-volatility or high-maintenance tickers.
 
-For $N$ contracts:
+## Bifurcated Sizing Logic
 
-$$
-\text{Total Margin} = N \times \text{Margin per contract}
-$$
+To correct these errors, the implementation separates the concern of safety from the concern of precision.
 
-You should then compare that to your available margin equity or buying power after any existing positions, because the broker checks the **post-trade** requirement, not just the standalone trade.[^2][^1]
+### The Allocator Gate
+The Portfolio Margin Allocator uses the Reg-T formula as a hard gate. This ensures that the suggested combination of trades will pass the broker's initial margin check. It serves as the authoritative boundary for total portfolio capacity.
 
-## Algorithm pseudocode
+### The Scanner Buffer
+The Contract Selling Analyst (the scanner) uses a more conservative calculation for suggested contract sizing. It incorporates a safety buffer target (e.g., 20 percent) between the entry price and the liquidation threshold. This ensures the scanner suggests fewer contracts than the hard ceiling allows, creating a protective cushion.
 
-```text
-input:
-  S = underlying price
-  K = strike price
-  P = option premium per share
-  N = number of short put contracts
-  multiplier = 100
+### ROI Consistency
+Despite using a conservative buffer for contract counts, the scanner uses the Reg-T formula for yield and return on investment (ROI) calculations. This ensures that the reported return accurately reflects the capital the broker will actually lock in the account, rather than a theoretical 100 percent cash-secured amount.
 
-OTM = max(S - K, 0)
+## Implementation Steps
 
-req1 = P + 0.20 * S - OTM
-req2 = P + 0.10 * K
+Centralize all margin logic in a core math engine (e.g., csp_math_engine.py). This avoids duplicated logic across the scanner and allocator and ensures a single source of truth for the formula.
 
-margin_per_share = max(req1, req2)
-margin_per_contract = margin_per_share * multiplier
-total_margin = margin_per_contract * N
-```
+Always thread the ticker symbol into the math functions. This allows the engine to pull specific broker rates from the configuration. If the ticker is unknown, the engine must fallback to conservative regulatory defaults (20 percent short rate and 10 percent floor rate) rather than a flat percentage.
 
-
-## Recommended implementation notes
-
-- Use **per-share** inputs internally, then multiply by 100 at the end.
-- Make sure your algorithm uses the **current underlying price at order entry**, not your cost basis.
-- Apply the result as a **required margin increase**, then test whether the account still satisfies broker house rules after the trade.
-- If you support multiple broker modes, keep a separate **house-margin override** layer, since brokers can tighten requirements above the Reg T baseline.[^3][^2]
-
-
-## Example with your BE trade
-
-Using the values you provided earlier:
-
-- $S \approx 133.24$[^4]
-- $K = 125$
-- $P = 5$
-
-Then:
-
-- $\text{OTM} = 133.24 - 125 = 8.24$
-- $P + 0.20S - \text{OTM} = 5 + 26.648 - 8.24 = 23.408$
-- $P + 0.10K = 5 + 12.5 = 17.5$
-
-So the margin floor is:
-
-$$
-23.408 \times 100 = 2340.80 \text{ per contract}
-$$
-
-and for 17 contracts:
-
-$$
-2340.80 \times 17 = 39,793.60
-$$
-
-That is the **baseline minimum** under the published short-put formula, not necessarily your broker’s actual requirement.[^1][^4]
+When calculating the maintenance requirement, substitute the initial_short and initial_long rates with maint_short and maint_long respectively. This allows the algorithm to predict the price floor where a margin call would occur.

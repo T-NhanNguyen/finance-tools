@@ -65,6 +65,20 @@ APPLIES_NIIT = False
 # OPTIONS SCANNER
 # ===========================================================
 
+# Default margin requirement if a ticker is missing from the dictionary
+DEFAULT_MARGIN_REQ = 0.50
+
+# Global Toggle: When True, ignores ticker-specific margin_reqs and enforces 50% margin
+# for all trades to ensure maximum safety.
+USE_STATIC_CONSERVATIVE_MARGIN = True
+
+# Optimal Margin Sizing Safety Cushion target distance from entry to liquidation (e.g., 0.15 = 15%)
+SAFETY_BUFFER_TARGET = 0.20
+
+# Minimum premium-to-underlying yield required to qualify a trade (the "2% rule").
+# e.g. 0.02 = 2%
+MIN_YIELD_THRESHOLD = 0.02
+
 # Comprehensive broker margin requirements per ticker
 MARGIN_REQS = {
     "MP": {"initial_long": 0.2806, "maint_long": 0.2551, "initial_short": 0.30, "maint_short": 0.30},
@@ -76,8 +90,7 @@ MARGIN_REQS = {
     "NBIS": {"initial_long": 0.3162, "maint_long": 0.2875, "initial_short": 0.3162, "maint_short": 0.30},
     "NEBX": {"initial_long": 0.30, "maint_long": 0.30, "initial_short": 0.30, "maint_short": 0.30},
     "IREN": {"initial_long": 0.3962, "maint_long": 0.3602, "initial_short": 0.3962, "maint_short": 0.3602},
-    # BE: IBKR observed $163,652 initial margin for 17×$125 puts (2026-03-27). Per-share = $96.27, rate = 77%.
-    "BE": {"initial_long": 0.3667, "maint_long": 0.3243, "initial_short": 0.7702, "maint_short": 0.3243},
+    "BE": {"initial_long": 0.3667, "maint_long": 0.3243, "initial_short": 0.3667, "maint_short": 0.3243},
     "WULF": {"initial_long": 0.4202, "maint_long": 0.3822, "initial_short": 0.4202, "maint_short": 0.3822},
     "AAOI": {"initial_long": 0.7167, "maint_long": 0.4809, "initial_short": 0.5289, "maint_short": 0.4809},
     "PLTR": {"initial_long": 0.2500, "maint_long": 0.2500, "initial_short": 0.3000, "maint_short": 0.3000},
@@ -89,16 +102,6 @@ MARGIN_REQS = {
     "RKLB": {"initial_long": 0.3282, "maint_long": 0.2984, "initial_short": 0.3282, "maint_short": 0.3000},
     "AAPL": {"initial_long": 0.2500, "maint_long": 0.2500, "initial_short": 0.3000, "maint_short": 0.3000}
 }
-# Default margin requirement if a ticker is missing from the dictionary
-DEFAULT_MARGIN_REQ = 0.50
-
-# Optimal Margin Sizing Safety Cushion target distance from entry to liquidation (e.g., 0.15 = 15%)
-SAFETY_BUFFER_TARGET = 0.20
-
-# Minimum premium-to-underlying yield required to qualify a trade (the "2% rule").
-# e.g. 0.02 = 2%
-MIN_YIELD_THRESHOLD = 0.02
-
 
 # Cash Engine Weights (Prioritizes Structural Safety/GEX Walls)
 CASH_W_DENSITY = 0.70

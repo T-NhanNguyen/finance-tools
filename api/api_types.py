@@ -261,6 +261,7 @@ class ContractSellingRequest(BaseModel):
     strategy: Optional[Literal["CSP", "CC"]] = Field("CSP", description="Strategy type: CSP or CC")
     engine: Optional[Literal["BOTH", "CASH", "WHEEL"]] = Field("BOTH", description="Engine filter mode (BOTH, CASH, WHEEL)")
     expiration: Optional[str] = Field(None, description="Expiration date (YYYY-MM-DD or index)")
+    cash_equity: Optional[float] = Field(None, description="Dynamic capital budget override")
 
 
 class PortfolioSimulationRequest(BaseModel):
@@ -268,3 +269,4 @@ class PortfolioSimulationRequest(BaseModel):
     tickers: List[str] = Field(description="List of tickers to scan and optimize")
     strategy: Optional[Literal["CSP", "CC"]] = Field("CSP", description="Strategy type: CSP or CC")
     expiration: Optional[str] = Field(None, description="Expiration date")
+    cash_equity: Optional[float] = Field(None, description="Dynamic capital budget override")

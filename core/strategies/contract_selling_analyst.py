@@ -21,7 +21,7 @@ from core.strategies.strategy_config import (
     LENDERS, MARGIN_REQS, DEFAULT_MARGIN_REQ,
     MIN_MONEYNESS_PCT, WHEEL_MONEYNESS_MAX
 )
-from core.analysis.csp_math_engine import calculate_option_metrics, calculate_cash_requirement
+from core.analysis.csp_math_engine import calculate_option_metrics
 
 
 def _extract_atm_premium(strikes: List[Dict], spot_price: float, strategy_type: str) -> float:
@@ -69,7 +69,8 @@ class ContractSellingAnalyst:
         atm_weekly_premium: float,
         strategy_type: str = "CSP",
         initial_req: Optional[float] = None,
-        maintenance_req: Optional[float] = None
+        maintenance_req: Optional[float] = None,
+        ticker: str = ""
     ) -> Dict:
         """
         Function 1: The 'Data Scientist'
@@ -89,7 +90,8 @@ class ContractSellingAnalyst:
             total_working_capital=self.total_working_capital,
             cash_equity=self.cash_equity,
             init_req=init_req,
-            maint_req=maint_req
+            maint_req=maint_req,
+            ticker=ticker
         )
         
         # Unpack commonly used variables for backward compatibility
@@ -267,8 +269,12 @@ class ContractSellingAnalyst:
         init_req = margin_info.get("initial_short", DEFAULT_MARGIN_REQ)
         maint_req = margin_info.get("maint_short", DEFAULT_MARGIN_REQ)
 
-        cash_req = calculate_cash_requirement(spot_price, init_req, maint_req)
-        effective_capital = (self.cash_equity / cash_req) * spot_price if cash_req > 0 else self.total_working_capital
+        from core.analysis.csp_math_engine import calc_short_put_initial_margin_per_contract
+        atm_init_margin = calc_short_put_initial_margin_per_contract(
+            spot_price, spot_price, atm_weekly_premium, ticker
+        )
+        effective_capital = (self.cash_equity / atm_init_margin) * spot_price * 100 if atm_init_margin > 0 else self.total_working_capital
+        effective_bp_pct = (atm_init_margin / (spot_price * 100)) * 100
 
         analyzed_results = []
         for s_data in strikes:
@@ -295,7 +301,8 @@ class ContractSellingAnalyst:
                  atm_weekly_premium=atm_weekly_premium,
                  strategy_type=strategy_type,
                  initial_req=init_req,
-                 maintenance_req=maint_req
+                 maintenance_req=maint_req,
+                 ticker=ticker
              )
              analyzed_results.append(res)
         
@@ -307,6 +314,7 @@ class ContractSellingAnalyst:
              "strategy_type": strategy_type,
              "atm_premium_benchmark": atm_weekly_premium,
              "effective_capital": effective_capital,
+             "effective_bp_pct": effective_bp_pct,
              "init_req": init_req,
              "maint_req": maint_req,
              "expiration": data.get("expiration"),
@@ -354,7 +362,7 @@ def run_scanner():
              is_cc = res.get("strategy_type", "CSP").upper() == "CC"
              benchmark_label = "Call" if is_cc else "Put"
              print(f"Spot: ${res['spot_price']:.2f} | Benchmark {benchmark_label} Premium: ${res['atm_premium_benchmark']:.2f}")
-             print(f"Effective Capital / BP: ${res['effective_capital']:,.2f} (Capped by {res.get('init_req', 0)*100:.1f}% Req)")
+             print(f"Effective Capital / BP: ${res['effective_capital']:,.2f} (Reg-T formula margin: {res.get('effective_bp_pct', 0):.1f}% of notional)")
              print("-" * 70)
              
              for engine, p_list in res["pillars"].items():
