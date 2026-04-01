@@ -240,32 +240,25 @@ class ContractSellingAnalyst:
             
         return output_dict
 
-    def scan(
+    def scan_from_chain(
         self, 
-        ticker: str, 
-        expiration_input: Optional[str] = None, 
+        chain_data: Dict, 
         strategy_type: str = "CSP", 
-        top_n_pillars: int = TOP_N_PILLARS,
         engine_mode: str = "BOTH"
     ) -> Dict:
         """
-        Runs complete scanner pipeline.
-        Calls GEX data endpoints and extracts actionable benchmarks.
+        Runs analysis pipeline on a pre-loaded option chain.
+        Skips network I/O.
         """
-        data = fetch_gex_single(ticker, expiration_input)
-        if "error" in data:
-            return data
-            
-        spot_price = data.get("spotPrice")
-        strikes = data.get("strikes", [])
+        ticker = chain_data.get("ticker", "UNKNOWN")
+        spot_price = chain_data.get("spotPrice")
+        strikes = chain_data.get("strikes", [])
         if not strikes:
-             return {"error": "No strikes returned by GEX data", "ticker": ticker}
+             return {"error": "No strikes in chain data", "ticker": ticker}
              
-        # Extract ATM Weekly Premium Benchmark from the already-fetched chain
+        # Extract ATM Weekly Premium Benchmark from the chain
         atm_weekly_premium = _extract_atm_premium(strikes, spot_price, strategy_type)
         margin_info = MARGIN_REQS.get(ticker.upper(), MARGIN_REQS.get("DEFAULT", {}))
-        # Both CSP and CC are short-option strategies (selling premium)
-        # and should use the broker's 'short' margin requirements.
         init_req = margin_info.get("initial_short", DEFAULT_MARGIN_REQ)
         maint_req = margin_info.get("maint_short", DEFAULT_MARGIN_REQ)
 
@@ -281,15 +274,15 @@ class ContractSellingAnalyst:
              strike = s_data['strike']
              
              if strategy_type.upper() == "CSP":
-                 premium = (s_data['putBid'] + s_data['putAsk']) / 2
-                 if premium <= 0: continue
+                 premium = (s_data.get('putBid', 0) + s_data.get('putAsk', 0)) / 2
              else: # CC
-                 premium = (s_data['callBid'] + s_data['callAsk']) / 2
-                 if premium <= 0: continue
+                 premium = (s_data.get('callBid', 0) + s_data.get('callAsk', 0)) / 2
                  
-             gex_raw = s_data['gexMillions'] * 1e6
-             oi_raw = s_data['openInterestThousands'] * 1e3
-             days_to_expiry = data.get("daysToExpiration", 30)
+             if premium <= 0: continue
+                 
+             gex_raw = s_data.get('gexMillions', 0) * 1e6
+             oi_raw = s_data.get('openInterestThousands', 0) * 1e3
+             days_to_expiry = chain_data.get("daysToExpiration", 30)
              
              res = self.analyze_strike(
                  strike=strike,
@@ -317,10 +310,27 @@ class ContractSellingAnalyst:
              "effective_bp_pct": effective_bp_pct,
              "init_req": init_req,
              "maint_req": maint_req,
-             "expiration": data.get("expiration"),
+             "expiration": chain_data.get("expiration"),
              "pillars": pillars,
              "all_strikes": analyzed_results
         }
+
+    def scan(
+        self, 
+        ticker: str, 
+        expiration_input: Optional[str] = None, 
+        strategy_type: str = "CSP", 
+        top_n_pillars: int = TOP_N_PILLARS,
+        engine_mode: str = "BOTH"
+    ) -> Dict:
+        """
+        Runs complete scanner pipeline with synchronous fetch.
+        """
+        data = fetch_gex_single(ticker, expiration_input)
+        if "error" in data:
+            return data
+            
+        return self.scan_from_chain(data, strategy_type=strategy_type, engine_mode=engine_mode)
 
 
 def run_scanner():

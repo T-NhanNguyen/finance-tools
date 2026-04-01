@@ -1,8 +1,5 @@
-"""
-API Handler Functions
-Converts core data and strategy modules into structured JSON responses.
-"""
-
+import threading
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 from typing import List, Dict, Optional
@@ -13,6 +10,8 @@ from core.data import (
     getIndicators, IndicatorType, generateTradingSignals, getTrendSegments, _getPiecewiseBoundaries, calculateTheilSenSlope, MINIMUM_SEGMENT_LENGTH
 )
 from core.data.gex_provider import fetch_gex_data_raw, parse_flexible_date
+from core.data.bulk_data_loader import fetch_all_expirations, get_cached_option_chain
+from api.cache_manager import cache_manager
 
 from core.strategies.contract_selling_analyst import ContractSellingAnalyst
 from core.strategies.portfolio_margin_allocator import (
@@ -27,7 +26,7 @@ from .api_types import (
     GEXResponse, GEXStrikeData, IndicatorsResponse, 
     IndicatorDataPoint, OBVTrendSegment, ErrorResponse,
     ContractSellingResponse, StrikeAnalysisData, PillarScoredPoint, ActionablePillars,
-    PortfolioMarginResponse, PortfolioPositionData
+    PortfolioMarginResponse, PortfolioPositionData, TickerQueueStatus
 )
 
 
@@ -38,10 +37,18 @@ from .api_types import (
 def getGEXData(ticker: str, expiration_input: Optional[str] = None) -> Dict:
     """
     Fetch GEX (Gamma Exposure) data and return structured JSON.
-    Delegates core fetching and processing to core.data.gex_provider.
+    Uses cache_manager for unified data access.
     """
     try:
-        data = fetch_gex_data_raw(ticker, expiration_input)
+        ticker = ticker.upper()
+        # 1. Try cache read via CacheManager (which handles memory + disk)
+        data = cache_manager.get(ticker, expiration_input)
+        
+        # 2. Synchronous fallback for GEX page feel
+        if not data:
+            data = fetch_gex_data_raw(ticker, expiration_input)
+            if "error" not in data:
+                cache_manager.put(ticker, expiration_input, data)
         
         if "error" in data:
             return ErrorResponse(
@@ -70,6 +77,64 @@ def getGEXData(ticker: str, expiration_input: Optional[str] = None) -> Dict:
             ticker=ticker,
             details=str(exc)
         ).model_dump()
+
+
+# ============================================================================
+# Ticker Queue & Chain Handlers
+# ============================================================================
+
+def queueTickers(tickers: List[str], expiration: Optional[str] = None) -> Dict[str, Dict]:
+    """
+    Triggers background fetching for multiple tickers.
+    Returns immediate status report.
+    """
+    result = {}
+    for ticker in [t.upper() for t in tickers]:
+        cached_exps = cache_manager.list_cached_expirations(ticker)
+        
+        # Check if requested expiration (or nearest) is already fresh
+        if cache_manager.is_fresh(ticker, expiration):
+            result[ticker] = {
+                "status": "cached", 
+                "cached_expirations": cached_exps
+            }
+        else:
+            # Fire-and-forget background fetch
+            threading.Thread(
+                target=fetch_all_expirations, 
+                args=(ticker,), 
+                daemon=True
+            ).start()
+            result[ticker] = {
+                "status": "fetching", 
+                "cached_expirations": cached_exps
+            }
+    return result
+
+
+def getOptionChain(ticker: str, expiration: Optional[str] = None) -> Optional[Dict]:
+    """
+    Retrieves pure option chain data from cache.
+    Returns None on cache miss (caller handles 404).
+    """
+    data = get_cached_option_chain(ticker, expiration)
+    if not data:
+        return None
+        
+    try:
+        strikes = [GEXStrikeData(**s) for s in data["strikes"]]
+        return GEXResponse(
+            ticker=data["ticker"],
+            expiration=data["expiration"],
+            spotPrice=data["spotPrice"],
+            daysToExpiration=data["daysToExpiration"],
+            strikes=strikes,
+            maxGEXAbsolute=data["maxGEXAbsolute"],
+            maxOpenInterest=data["maxOpenInterest"],
+            availableExpirations=data["availableExpirations"]
+        ).model_dump()
+    except Exception:
+        return None
 
 
 # ============================================================================
@@ -170,7 +235,7 @@ def getIndicatorsData(
 
 
 # ============================================================================
-# Contract Selling Handler
+# Contract Selling & Batch Analysis Handlers
 # ============================================================================
 
 def getContractSellingData(
@@ -182,16 +247,24 @@ def getContractSellingData(
 ) -> Dict:
     """
     Fetch Contract Selling analysis and return structured JSON.
+    Optimized to use cache_manager when available.
     """
     try:
         current_equity = cash_equity if cash_equity is not None else sum(LENDERS)
         analyst = ContractSellingAnalyst(cash_equity=current_equity)
-        result = analyst.scan(
-            ticker.upper(), 
-            expiration_input=expiration, 
-            strategy_type=strategy.upper(), 
-            engine_mode=engine.upper()
-        )
+        
+        # Try cache-first analysis
+        chain = get_cached_option_chain(ticker, expiration)
+        if chain:
+            result = analyst.scan_from_chain(chain, strategy_type=strategy.upper(), engine_mode=engine.upper())
+        else:
+            # Fallback to sync scan (fetch + compute)
+            result = analyst.scan(
+                ticker.upper(), 
+                expiration_input=expiration, 
+                strategy_type=strategy.upper(), 
+                engine_mode=engine.upper()
+            )
         
         if "error" in result:
             return ErrorResponse(error=result["error"], ticker=ticker).model_dump()
@@ -199,6 +272,39 @@ def getContractSellingData(
         return ContractSellingResponse(**result).model_dump()
     except Exception as exc:
         return ErrorResponse(error="Internal server error in ContractSellingAnalyst", ticker=ticker, details=str(exc)).model_dump()
+
+
+def batchAnalyzeContracts(
+    tickers: List[str],
+    expiration: str,
+    strategy: str = "CSP",
+    cash_equity: Optional[float] = None
+) -> Dict[str, Dict]:
+    """
+    Perform compute-only analysis for multiple tickers against a specific expiration.
+    Used by the Option Selling Analysis dashboard for high-performance switching.
+    """
+    results = {}
+    current_equity = cash_equity if cash_equity is not None else sum(LENDERS)
+    analyst = ContractSellingAnalyst(cash_equity=current_equity)
+    
+    def process_ticker(t):
+        t = t.upper()
+        chain = get_cached_option_chain(t, expiration)
+        if not chain:
+            return t, {"error": "chain not cached", "ticker": t}
+        
+        try:
+            analysis = analyst.scan_from_chain(chain, strategy_type=strategy.upper())
+            return t, ContractSellingResponse(**analysis).model_dump()
+        except Exception as e:
+            return t, {"error": str(e), "ticker": t}
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        for ticker, result in pool.map(process_ticker, tickers):
+            results[ticker] = result
+            
+    return results
 
 
 # ============================================================================

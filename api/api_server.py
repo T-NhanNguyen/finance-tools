@@ -10,9 +10,13 @@ import os
 
 from .api_types import (
     GEXRequest, IndicatorsRequest, GEXResponse, IndicatorsResponse, ErrorResponse,
-    ContractSellingRequest, ContractSellingResponse, PortfolioSimulationRequest, PortfolioMarginResponse
+    ContractSellingRequest, ContractSellingResponse, PortfolioSimulationRequest, 
+    PortfolioMarginResponse, QueueTickersRequest, BatchAnalysisRequest
 )
-from .api_handlers import getGEXData, getIndicatorsData, getContractSellingData, getPortfolioSimulationData
+from .api_handlers import (
+    getGEXData, getIndicatorsData, getContractSellingData, 
+    getPortfolioSimulationData, queueTickers, getOptionChain, batchAnalyzeContracts
+)
 
 # Security Configuration
 API_SECRET_KEY = os.getenv("API_SECRET_KEY")
@@ -57,6 +61,35 @@ async def healthCheck():
     """Health check endpoint"""
     print("Health check endpoint hit!")
     return {"status": "healthy", "service": "finance-tools-api"}
+
+
+# ============================================================================
+# Ticker Queue & Cache Management
+# ============================================================================
+
+@app.post("/api/queue-tickers", dependencies=api_dependencies)
+async def queue_tickers_api(request: QueueTickersRequest):
+    """
+    Trigger background fetching for multiple tickers.
+    """
+    return queueTickers(request.tickers, request.expiration)
+
+
+@app.get("/api/option-chain/{ticker}", response_model=GEXResponse, dependencies=api_dependencies)
+async def get_option_chain_api(
+    ticker: str,
+    expiration: Optional[str] = Query(None, description="Expiration date (YYYY-MM-DD)")
+):
+    """
+    Get raw option chain data from cache.
+    """
+    result = getOptionChain(ticker, expiration)
+    if result is None:
+        raise HTTPException(
+            status_code=404, 
+            detail={"status": "queued", "ticker": ticker.upper()}
+        )
+    return result
 
 
 # ============================================================================
@@ -129,9 +162,24 @@ async def postIndicators(request: IndicatorsRequest):
 
 
 # ============================================================================
-# Contract Selling Endpoints
+# Contract Selling & Batch Analysis
 # ============================================================================
 
+@app.post("/api/option-analysis/batch", dependencies=api_dependencies)
+async def batch_analyze_api(request: BatchAnalysisRequest):
+    """
+    Perform compute-only analysis for multiple tickers against one expiration.
+    Returns a dict mapping ticker -> ContractSellingResponse.
+    """
+    return batchAnalyzeContracts(
+        request.tickers,
+        request.expiration,
+        request.strategy or "CSP",
+        request.cash_equity
+    )
+
+
+# DEPRECATED: Single asset analysis — frontend should move to batch endpoint
 @app.post("/api/contract-selling", response_model=ContractSellingResponse, dependencies=api_dependencies)
 async def analyze_contract_selling(request: ContractSellingRequest):
     """Analyze a single asset for option selling opportunities."""

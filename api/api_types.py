@@ -270,3 +270,23 @@ class PortfolioSimulationRequest(BaseModel):
     strategy: Optional[Literal["CSP", "CC"]] = Field("CSP", description="Strategy type: CSP or CC")
     expiration: Optional[str] = Field(None, description="Expiration date")
     cash_equity: Optional[float] = Field(None, description="Dynamic capital budget override")
+
+
+class QueueTickersRequest(BaseModel):
+    """Request to fetch and cache option chains for multiple tickers"""
+    tickers: List[str] = Field(description="List of tickers to queue")
+    expiration: Optional[str] = Field(None, description="Optional specific expiration to prioritize")
+
+
+class TickerQueueStatus(BaseModel):
+    """Status entry for a single ticker in the queue"""
+    status: Literal["cached", "fetching", "error"] = Field(description="Current fetch status")
+    cached_expirations: List[str] = Field(description="List of expiration dates already in cache")
+
+
+class BatchAnalysisRequest(BaseModel):
+    """Request for compute-only analysis across multiple cached tickers"""
+    tickers: List[str] = Field(description="List of tickers to analyze")
+    expiration: str = Field(description="Target expiration date (YYYY-MM-DD)")
+    strategy: Optional[Literal["CSP", "CC"]] = Field("CSP", description="Strategy type: CSP or CC")
+    cash_equity: Optional[float] = Field(None, description="Available capital override")

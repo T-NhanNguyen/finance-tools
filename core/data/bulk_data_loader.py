@@ -1,8 +1,3 @@
-"""
-Bulk Data Loader & Caching Utility
-Provides rate-limited concurrent I/O fetches utilizing ThreadPools and File Caching.
-"""
-
 import os
 import json
 import time
@@ -10,9 +5,7 @@ import threading
 from typing import List, Dict, Optional
 from concurrent.futures import ThreadPoolExecutor
 from core.data.gex_provider import fetch_gex_data_raw
-
-CACHE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".gex_cache"))
-CACHE_EXPIRY = 900  # 15 minutes (900 seconds)
+from api.cache_manager import cache_manager, CACHE_DIR, CACHE_EXPIRY
 
 _FETCH_LOCK = threading.Lock()
 FETCH_STAGGER_DELAY = 0.5  # seconds between live network requests to avoid rate limiting
@@ -52,14 +45,14 @@ def fetch_gex_single(ticker: str, expiration: Optional[str] = None) -> Dict:
     Serializes live network requests via a lock to avoid rate limiting.
     Retries up to MAX_FETCH_RETRIES times with exponential backoff on failure.
     """
-    cache_path = _get_cache_path(ticker, expiration)
-    cached_data = _load_from_cache(cache_path)
+    # 1. Check Cache Manager first (Memory + Disk)
+    cached_data = cache_manager.get(ticker, expiration)
     if cached_data:
         return cached_data
 
     with _FETCH_LOCK:
-        # Re-check cache after acquiring lock — another thread may have populated it
-        cached_data = _load_from_cache(cache_path)
+        # Re-check cache after acquiring lock
+        cached_data = cache_manager.get(ticker, expiration)
         if cached_data:
             return cached_data
 
@@ -71,7 +64,7 @@ def fetch_gex_single(ticker: str, expiration: Optional[str] = None) -> Dict:
                 strikes = data.get("strikes", [])
                 total_bids = sum((s.get("putBid", 0) or 0) + (s.get("callBid", 0) or 0) for s in strikes)
                 if strikes and total_bids > 0:
-                    _save_to_cache(cache_path, data)
+                    cache_manager.put(ticker, expiration, data)
                 return data
             last_result = data
 
@@ -94,6 +87,53 @@ def fetch_gex_bulk(tickers: List[str], expiration: Optional[str] = None, max_wor
             results[t] = data
 
     return results
+
+def fetch_all_expirations(ticker: str) -> Dict[str, str]:
+    """
+    Fetches the nearest expiration first (to get availableExpirations list),
+    then spawns background threads for the remaining expirations.
+    Returns immediately with { expiration_date: "fetching"|"cached"|"error" } status map.
+    """
+    ticker = ticker.upper()
+    # 1. Fetch nearest to get the list of all expirations
+    nearest_data = fetch_gex_single(ticker, None)
+    
+    if "error" in nearest_data:
+        return {"nearest": "error"}
+
+    expirations = nearest_data.get("availableExpirations", [])
+    if not expirations:
+        return {"nearest": "cached"}
+
+    status_map = {}
+    to_fetch = []
+
+    for exp in expirations:
+        if cache_manager.is_fresh(ticker, exp):
+            status_map[exp] = "cached"
+        else:
+            status_map[exp] = "fetching"
+            to_fetch.append(exp)
+
+    # 2. Spawn background threads for remaining expirations
+    def background_worker(t, e):
+        fetch_gex_single(t, e)
+
+    if to_fetch:
+        executor = ThreadPoolExecutor(max_workers=4)
+        for exp in to_fetch:
+            executor.submit(background_worker, ticker, exp)
+        # Note: Executor is NOT shut down here to allow background work to continue
+        # but we don't wait for results. 
+
+    return status_map
+
+def get_cached_option_chain(ticker: str, expiration: Optional[str]) -> Optional[Dict]:
+    """
+    Pure cache read — delegates to cache_manager.get().
+    Returns None on miss; does NOT trigger a live fetch.
+    """
+    return cache_manager.get(ticker.upper(), expiration)
 
 
 def run_bulk_loader():
