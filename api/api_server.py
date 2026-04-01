@@ -36,16 +36,22 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Configure CORS for frontend access
-ALLOWED_ORIGINS = os.getenv(
-    "ALLOWED_ORIGINS", 
+# Configure CORS for frontend access.
+# Set ALLOWED_ORIGINS=* in docker-compose to allow all origins (required for
+# dynamic hosts like Cloudflared tunnels and Vercel preview deployments).
+# Note: allow_credentials must be False when allow_origins=["*"] per CORS spec.
+# Authentication is handled via X-API-Secret header, not cookies, so this is safe.
+ALLOWED_ORIGINS_RAW = os.getenv(
+    "ALLOWED_ORIGINS",
     "https://stool-webapp.vercel.app,http://localhost:3000,http://localhost:8000"
-).split(",")
+)
+ALLOW_ALL_ORIGINS = ALLOWED_ORIGINS_RAW.strip() == "*"
+ALLOWED_ORIGINS = ["*"] if ALLOW_ALL_ORIGINS else ALLOWED_ORIGINS_RAW.split(",")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
+    allow_credentials=not ALLOW_ALL_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
