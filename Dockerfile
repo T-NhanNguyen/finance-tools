@@ -1,4 +1,4 @@
-# Use Python 3.11 slim image as the base
+# Use Python 3.12 slim image as the base
 FROM python:3.12-slim-bookworm
 
 # Set working directory
@@ -10,21 +10,23 @@ RUN apt-get update && apt-get install -y curl && \
     apt-get install -y nodejs && \
     rm -rf /var/lib/apt/lists/*
 
-# Copy Python requirements and install
+# Copy requirements and install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy package.json and install MCP dependencies
+# Copy package.json and install MCP dependencies (including Express)
 COPY package.json .
 RUN npm install
 
-# Copy source files
-COPY *.py ./
-COPY *.ts ./
+# Copy EVERYTHING to ensure subdirectories like mcp/ and core/ are preserved
+COPY . .
 
 # Set Python to run in unbuffered mode
 ENV PYTHONUNBUFFERED=1
 
-# Expose the MCP server via stdio
-# Note: MCP servers over stdio don't need to EXPOSE ports
-CMD ["npx", "tsx", "mcp_server.ts"]
+# Expose both the FastAPI port and the MCP-SSE port
+EXPOSE 8000
+EXPOSE 3001
+
+# Default command remains the MCP loader
+CMD ["npx", "tsx", "mcp/mcp_server.ts", "--transport=sse"]

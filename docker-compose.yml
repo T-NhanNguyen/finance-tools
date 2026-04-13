@@ -30,3 +30,19 @@ services:
       - ALLOWED_ORIGINS=*
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+  finance-mcp:
+    image: finance-api:latest
+    container_name: finance-mcp
+    build: .
+    command: npx tsx mcp/mcp_server.ts --transport=sse
+    ports:
+      - "3001:3001"
+    volumes:
+      - .:/app
+      - /app/node_modules
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
