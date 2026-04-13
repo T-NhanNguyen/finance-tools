@@ -13,7 +13,7 @@ from core.data import (
 )
 from core.analysis import calculateGamma
 
-OPTION_CHAIN_LENGTH = 10
+OPTION_CHAIN_LENGTH = 50
 
 def parse_flexible_date(ticker: str, date_str: Optional[str]) -> Optional[str]:
     """

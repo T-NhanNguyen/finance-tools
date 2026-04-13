@@ -66,7 +66,7 @@ APPLIES_NIIT = False
 # ===========================================================
 
 # Default margin requirement if a ticker is missing from the dictionary
-DEFAULT_MARGIN_REQ = 0.50
+DEFAULT_MARGIN_REQ = 0.70
 
 # Global Toggle: When True, ignores ticker-specific margin_reqs and enforces 50% margin
 # for all trades to ensure maximum safety.
