@@ -342,7 +342,16 @@ def run_scanner():
     parser.add_argument("--expiration", help="Expiration date (YYYY-MM-DD, partial string, or index)")
     args = parser.parse_args()
     
-    tickers = [t.upper() for t in args.tickers] if args.tickers else ["ASTS", "QQQ", "RKLB", "NBIS"]
+    parsed_tickers = []
+    parsed_expiration = args.expiration
+    for t in args.tickers:
+        # If it looks like a date or numerical index, treat as expiration
+        if (any(char.isdigit() for char in t) and any(sep in t for sep in ["/", "-", "."])) or (t.isdigit() and len(t) <= 3):
+            parsed_expiration = t
+        else:
+            parsed_tickers.append(t)
+            
+    tickers = [t.upper() for t in parsed_tickers] if parsed_tickers else ["ASTS", "QQQ", "RKLB", "NBIS"]
     
     cash_equity = sum(LENDERS)
     analyst = ContractSellingAnalyst(cash_equity=cash_equity)
@@ -352,7 +361,7 @@ def run_scanner():
     from concurrent.futures import ThreadPoolExecutor
     def process_ticker(t):
         try:
-             return t, analyst.scan(t.upper(), expiration_input=args.expiration, strategy_type=args.strategy, engine_mode=args.engine)
+             return t, analyst.scan(t.upper(), expiration_input=parsed_expiration, strategy_type=args.strategy, engine_mode=args.engine)
         except Exception as e:
              return t, {"error": str(e)}
 

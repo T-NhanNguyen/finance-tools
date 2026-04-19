@@ -17,8 +17,8 @@ PRICE_PRECISION = 2
 COLUMNS_TO_DROP_GENERAL = ['Dividends', 'Stock Splits', 'OBV']
 COLUMNS_TO_DROP_OPTIONS = ['index', 'lastTradeDate', 'inTheMoney', 'contractSize', 'currency']
 DEFAULT_CURRENCY = "USD"
-TOGGLE_MINIFIED_OUTPUT_FORMAT = True  # Set False for pretty-printed output (indent=2)
-TOGGLE_TSON_OUTPUT_FORMAT = True     # Set False to bypass TSON tabular compression
+TOGGLE_MINIFIED_OUTPUT_FORMAT = False  # Set False for pretty-printed output (indent=2)
+TOGGLE_TSON_OUTPUT_FORMAT = False     # Set False to bypass TSON tabular compression
 
 HIGH_SIGNAL_METRICS = {
     'income': [
@@ -369,6 +369,19 @@ def routeCommand(commandString: str) -> str:
         
         return _formatMcpResponse(filteredChain)
 
+    elif functionName == "getFinancialStats":
+        params = _getParams(args, {"ticker": 0})
+        ticker = params.get("ticker")
+        if not ticker:
+            return _formatMcpResponse(None, error="getFinancialStats expects a ticker")
+        
+        stats = data.getValuationStats(ticker)
+        if stats is None:
+             return _formatMcpResponse(None, error=f"Could not retrieve stats for {ticker}")
+             
+        # Add summary signals if we can
+        return _formatMcpResponse(stats)
+
     elif functionName == "getFinancialStatements":
         fieldMap = {
             "ticker": 0, 
@@ -382,7 +395,7 @@ def routeCommand(commandString: str) -> str:
             return _formatMcpResponse(None, error="getFinancialStatements expects a ticker")
             
         periodArg = params.get("period", "quarterly")
-        latestReport = params.get("latestReport", False)
+        latestReport = params.get("latestReport", True)  # Default to True to reduce redundancy
         fullData = params.get("fullData", False)
 
         # Map string to Enum
@@ -394,17 +407,16 @@ def routeCommand(commandString: str) -> str:
             return _formatMcpResponse(None, error="getFinancialStatements expects a period of 'quarterly' or 'annual'")
 
         metrics = data.extractKeyMetrics(ticker, period=period)
-        statements = data.getAllStatements(ticker, period=period)
+        statements = data.getAllStatements(ticker, period=period) if fullData else {}
 
         signals = {}
-        if latestReport:
-            # Generate growth signals for all whitelist keys before we truncate the dataframes
+        # Generate growth signals for all whitelist keys if we have statements
+        if statements:
             for stmt_type, df in statements.items():
                 if df is not None and not df.empty and df.shape[1] >= 2:
                     whitelist = HIGH_SIGNAL_METRICS.get(stmt_type, [])
                     for metric in whitelist:
                         if metric in df.index:
-                            # yfinance indices can be tricky with ambiguity, handle safely
                             vals = df.loc[metric]
                             if hasattr(vals, 'iloc') and len(vals) >= 2:
                                 v0, v1 = vals.iloc[0], vals.iloc[1]
@@ -413,31 +425,28 @@ def routeCommand(commandString: str) -> str:
                                     signals[f"{metric} Growth Percent"] = round(growth, 2)
 
         # Apply High-Signal Filtering and denoise other information by default
-        if not fullData:
+        if not fullData and statements:
             filtered_statements = {}
             for stmt_type, df in statements.items():
                 if df is not None:
-                    # Filter rows (metrics) by our high-signal whitelist
                     whitelist = HIGH_SIGNAL_METRICS.get(stmt_type, [])
-                    # yfinance indices are the metric names
                     existing_keys = [k for k in whitelist if k in df.index]
                     if existing_keys:
                         filtered_statements[stmt_type] = df.loc[existing_keys]
             statements = filtered_statements
 
-        if latestReport:
+        if latestReport and statements:
             for key in statements:
                 df = statements[key]
                 if df is not None and hasattr(df, 'empty') and not df.empty:
-                    # yfinance DataFrames have dates as columns (most recent first)
-                    # and metrics as rows. We want the most recent column.
                     statements[key] = df.iloc[:, 0]
 
         return _formatMcpResponse({
             "ticker": ticker.upper(),
-            "signals": signals if latestReport else None,
+            "period": period.value,
             "metrics": metrics,
-            "statements": statements
+            "signals": signals if signals else None,
+            "statements": statements if fullData or statements else "Call with fullData=True to see raw statements"
         })
 
     elif functionName == "getContractInfoByStrike":

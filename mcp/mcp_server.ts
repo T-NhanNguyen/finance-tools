@@ -155,6 +155,17 @@ function createFinanceServer() {
             }
         },
         {
+            name: "getFinancialStats",
+            description: "Retrieve high-level valuation stats, market data, and trading metrics (P/E, PEG, Market Cap, Beta, Dividends, etc.).",
+            inputSchema: {
+                type: "object",
+                properties: {
+                    ticker: { type: "string", description: "Stock ticker symbol (e.g., AAPL)" }
+                },
+                required: ["ticker"]
+            }
+        },
+        {
             name: "getContractInfoByStrike",
             description: "Lookup comprehensive option contract information for multiple strikes, enriched with Greeks (Delta/Gamma). Use this for quantitative analysis of localized Gamma Exposure (GEX), identifying 'Gamma Walls' or pinning magnets at specific strikes, and assessing market maker hedging pressure.",
             inputSchema: {

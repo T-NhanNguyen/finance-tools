@@ -18,6 +18,7 @@ as needed for alternative scenarios.
 # ===========================================================
 LENDERS = [
     100_000,   # Lender 1
+    17_300,
 ]
 
 # Annual interest rate on all loans (flat rate applied to total principal).

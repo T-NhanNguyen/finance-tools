@@ -40,7 +40,7 @@ def parse_flexible_date(ticker: str, date_str: Optional[str]) -> Optional[str]:
 
     # Try parsing common formats
     parsed_dt = None
-    for fmt in ("%m/%d/%y", "%m-%d-%y", "%m/%d/%Y", "%m-%d-%Y", "%Y-%m-%d"):
+    for fmt in ("%m/%d/%y", "%m-%d-%y", "%m/%d/%Y", "%m-%d-%Y", "%Y-%m-%d", "%Y/%m/%d"):
         try:
             dt = datetime.strptime(date_str, fmt)
             normalized = dt.strftime("%Y-%m-%d")

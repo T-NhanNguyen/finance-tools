@@ -225,8 +225,6 @@ def extractKeyMetrics(ticker: str, period: StatementPeriod = StatementPeriod.ANN
     try:
         statements = getAllStatements(ticker, period)
         
-        # This checks each value individually against None, avoiding any DataFrame truth evaluation.
-        # Using any() function tries to evaluate each DataFrame as True/False, causing the same ambiguity error.
         hasData = (statements['income'] is not None or 
                    statements['balance_sheet'] is not None or 
                    statements['cash_flow'] is not None)
@@ -239,12 +237,34 @@ def extractKeyMetrics(ticker: str, period: StatementPeriod = StatementPeriod.ANN
         # Extract from income statement
         if statements['income'] is not None:
             incomeStmt = statements['income']
-            latestColumn = incomeStmt.columns[0]  # Most recent period
+            latestColumn = incomeStmt.columns[0]
+            prevColumn = incomeStmt.columns[1] if len(incomeStmt.columns) > 1 else None
+            
             metrics['revenue'] = safeExtract(incomeStmt, 'Total Revenue', latestColumn)
             metrics['gross_profit'] = safeExtract(incomeStmt, 'Gross Profit', latestColumn)
             metrics['operating_income'] = safeExtract(incomeStmt, 'Operating Income', latestColumn)
             metrics['net_income'] = safeExtract(incomeStmt, 'Net Income', latestColumn)
             metrics['ebitda'] = safeExtract(incomeStmt, 'EBITDA', latestColumn)
+            metrics['eps_diluted'] = safeExtract(incomeStmt, 'Diluted EPS', latestColumn)
+            
+            # Derived Margins
+            if metrics.get('revenue'):
+                if metrics.get('gross_profit'):
+                    metrics['gross_margin_pct'] = (metrics['gross_profit'] / metrics['revenue']) * 100
+                if metrics.get('operating_income'):
+                    metrics['operating_margin_pct'] = (metrics['operating_income'] / metrics['revenue']) * 100
+                if metrics.get('net_income'):
+                    metrics['net_margin_pct'] = (metrics['net_income'] / metrics['revenue']) * 100
+            
+            # Growth (YoY or QoQ based on period)
+            if prevColumn:
+                prev_rev = safeExtract(incomeStmt, 'Total Revenue', prevColumn)
+                if prev_rev and metrics.get('revenue'):
+                    metrics['revenue_growth_pct'] = ((metrics['revenue'] - prev_rev) / abs(prev_rev)) * 100
+                
+                prev_ni = safeExtract(incomeStmt, 'Net Income', prevColumn)
+                if prev_ni and metrics.get('net_income'):
+                    metrics['net_income_growth_pct'] = ((metrics['net_income'] - prev_ni) / abs(prev_ni)) * 100
             
         # Extract from balance sheet
         if statements['balance_sheet'] is not None:
@@ -254,6 +274,15 @@ def extractKeyMetrics(ticker: str, period: StatementPeriod = StatementPeriod.ANN
             metrics['total_liabilities'] = safeExtract(balanceSheet, 'Total Liabilities Net Minority Interest', latestColumn)
             metrics['total_equity'] = safeExtract(balanceSheet, 'Stockholders Equity', latestColumn)
             metrics['cash'] = safeExtract(balanceSheet, 'Cash And Cash Equivalents', latestColumn)
+            metrics['total_debt'] = safeExtract(balanceSheet, 'Total Debt', latestColumn)
+            
+            # Capital Structure
+            if metrics.get('total_assets') and metrics.get('total_liabilities'):
+                metrics['debt_to_assets_pct'] = (metrics['total_liabilities'] / metrics['total_assets']) * 100
+            if metrics.get('total_equity') and metrics.get('total_debt'):
+                metrics['debt_to_equity_pct'] = (metrics['total_debt'] / metrics['total_equity']) * 100
+            if metrics.get('total_assets') and metrics.get('cash'):
+                metrics['cash_to_assets_pct'] = (metrics['cash'] / metrics['total_assets']) * 100
             
         # Extract from cash flow
         if statements['cash_flow'] is not None:
@@ -263,17 +292,65 @@ def extractKeyMetrics(ticker: str, period: StatementPeriod = StatementPeriod.ANN
             metrics['free_cash_flow'] = safeExtract(cashFlow, 'Free Cash Flow', latestColumn)
             metrics['capital_expenditure'] = safeExtract(cashFlow, 'Capital Expenditure', latestColumn)
             
-        # Calculate derived metrics
-        if metrics.get('revenue') and metrics.get('net_income'):
-            metrics['profit_margin'] = (metrics['net_income'] / metrics['revenue']) * 100
-            
-        if metrics.get('total_assets') and metrics.get('total_liabilities'):
-            metrics['debt_to_assets'] = (metrics['total_liabilities'] / metrics['total_assets']) * 100
+            # CF Quality
+            if metrics.get('net_income') and metrics.get('operating_cash_flow'):
+                metrics['cash_flow_conversion_pct'] = (metrics['operating_cash_flow'] / metrics['net_income']) * 100 if metrics['net_income'] != 0 else None
             
         return metrics
         
     except Exception as error:
         print(f"Error extracting key metrics for {ticker}: {error}")
+        return None
+
+
+def getValuationStats(ticker: str) -> Optional[Dict]:
+    """
+    Extract valuation and market stats from yfinance info.
+    
+    Args:
+        ticker: Stock symbol
+        
+    Returns:
+        Dictionary with P/E, PEG, Market Cap, Beta, Dividend info, etc.
+    """
+    try:
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        
+        stats = {
+            "ticker": ticker.upper(),
+            "market_cap": info.get("marketCap"),
+            "enterprise_value": info.get("enterpriseValue"),
+            "trailing_pe": info.get("trailingPE"),
+            "forward_pe": info.get("forwardPE"),
+            "peg_ratio": info.get("pegRatio"),
+            "price_to_sales": info.get("priceToSalesTrailing12Months"),
+            "price_to_book": info.get("priceToBook"),
+            "enterprise_to_revenue": info.get("enterpriseToRevenue"),
+            "enterprise_to_ebitda": info.get("enterpriseToEbitda"),
+            "beta": info.get("beta"),
+            "dividend_yield": info.get("dividendYield"),
+            "dividend_rate": info.get("dividendRate"),
+            "payout_ratio": info.get("payoutRatio"),
+            "five_year_avg_div_yield": info.get("fiveYearAvgDividendYield"),
+            "trailing_eps": info.get("trailingEps"),
+            "forward_eps": info.get("forwardEps"),
+            "book_value": info.get("bookValue"),
+            "held_percent_institutions": info.get("heldPercentInstitutions"),
+            "held_percent_insiders": info.get("heldPercentInsiders"),
+            "short_ratio": info.get("shortRatio"),
+            "short_percent_of_float": info.get("shortPercentOfFloat"),
+            "fifty_two_week_high": info.get("fiftyTwoWeekHigh"),
+            "fifty_two_week_low": info.get("fiftyTwoWeekLow"),
+            "fifty_day_average": info.get("fiftyDayAverage"),
+            "two_hundred_day_average": info.get("twoHundredDayAverage")
+        }
+        
+        # Clean up None values
+        return {k: v for k, v in stats.items() if v is not None}
+        
+    except Exception as error:
+        print(f"Error extracting valuation stats for {ticker}: {error}")
         return None
 
 
