@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 from typing import List, Dict, Optional, Tuple
 from enum import Enum
-from datetime import datetime
+from datetime import datetime, timedelta
 from .get_stock_price import getCurrentPrice
 
 
