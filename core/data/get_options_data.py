@@ -128,7 +128,8 @@ def getOptionsNearStrike(
     targetStrike: Optional[float] = None,
     tolerance: float = 0.10,
     usePercentage: bool = True,
-    ticker: Optional[str] = None
+    ticker: Optional[str] = None,
+    underlyingPrice: Optional[float] = None
 ) -> Dict[str, Optional[pd.DataFrame]]:
     """
     Filter option chain to strikes near a target (or ATM).
@@ -139,8 +140,8 @@ def getOptionsNearStrike(
         targetStrike: Specific strike, or None for at-the-money (uses underlying price)
         tolerance: Absolute dollars or percentage (if usePercentage=True)
         usePercentage: If True, tolerance is % of underlying price (default/recommended)
-        underlyingPrice: Optional override price
         ticker: Required if underlyingPrice not provided and targetStrike is None
+        underlyingPrice: Optional override price
         
     Returns:
         Filtered {'calls': df, 'puts': df}
@@ -148,7 +149,7 @@ def getOptionsNearStrike(
     if chainData is None:
         return {"calls": None, "puts": None}
     
-    price = getCurrentPrice(ticker)
+    price = underlyingPrice or getCurrentPrice(ticker)
     if targetStrike is None and price is None:
         if ticker is None:
             return {"calls": None, "puts": None, "error": "empty ticker"}

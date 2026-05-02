@@ -3,3 +3,10 @@ from .get_options_data import getOptionChain, getOptionExpirations, OptionType, 
 from .get_stock_price import getCurrentPrice, getCurrentPricesBulk, getHistoricalPrices, getHistoricalPricesBulk, PricePeriod, PriceInterval
 from .get_technical_indicator import getIndicators, IndicatorType, generateTradingSignals, getTrendSegments, _getPiecewiseBoundaries, calculateTheilSenSlope, MINIMUM_SEGMENT_LENGTH
 from .get_gex_data import fetch_gex_structured
+
+# Option Strike Optimizer Support
+try:
+    from ..strategies.option_strike_optimizer import fetch_support_resistance
+except ImportError:
+    # Fallback if optimizer not yet available
+    pass

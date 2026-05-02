@@ -85,6 +85,28 @@ class BlackScholesCalculator:
             raise ValueError(f"Invalid optionType: '{optionType}'. Use 'call' or 'put'.")
 
         return float(deltaResult) if np.isscalar(strikePrice) else deltaResult
+            
+    def calculatePrice(self, stockPrice: float, strikePrice: Union[float, List[float], np.ndarray], timeToExpirationYears: float, impliedVolatility: float, optionType: str, daysToExpiration: int = None) -> Union[float, np.ndarray]:
+        """
+        Calculates theoretical Black-Scholes price for one or many strikes.
+        """
+        if daysToExpiration is None:
+            daysToExpiration = int(timeToExpirationYears * DAYS_IN_YEAR)
+            
+        riskFreeRate = getRiskFreeRate(daysToExpiration)
+        strikePricesArray, cleanedIV = self._validateInputs(stockPrice, strikePrice, timeToExpirationYears, riskFreeRate, impliedVolatility)
+        
+        d1 = self._calculateD1(stockPrice, strikePricesArray, timeToExpirationYears, riskFreeRate, cleanedIV)
+        d2 = d1 - cleanedIV * np.sqrt(timeToExpirationYears)
+        
+        if optionType.lower() == 'call':
+            priceResult = stockPrice * norm.cdf(d1) - strikePricesArray * np.exp(-riskFreeRate * timeToExpirationYears) * norm.cdf(d2)
+        elif optionType.lower() == 'put':
+            priceResult = strikePricesArray * np.exp(-riskFreeRate * timeToExpirationYears) * norm.cdf(-d2) - stockPrice * norm.cdf(-d1)
+        else:
+            raise ValueError(f"Invalid optionType: '{optionType}'. Use 'call' or 'put'.")
+
+        return float(priceResult) if np.isscalar(strikePrice) else priceResult
 
 # Singleton instance
 blackScholesCalculatorInstance = BlackScholesCalculator()
@@ -95,6 +117,9 @@ def calculateGamma(stockPrice: float, strikePrice: Union[float, List[float], np.
 
 def calculateDelta(stockPrice: float, strikePrice: Union[float, List[float], np.ndarray], timeToExpirationYears: float, impliedVolatility: float, optionType: str, daysToExpiration: int = None) -> Union[float, np.ndarray]:
     return blackScholesCalculatorInstance.calculateDelta(stockPrice, strikePrice, timeToExpirationYears, impliedVolatility, optionType, daysToExpiration)
+
+def calculateBlackScholesPrice(stockPrice: float, strikePrice: Union[float, List[float], np.ndarray], timeToExpirationYears: float, impliedVolatility: float, optionType: str, daysToExpiration: int = None) -> Union[float, np.ndarray]:
+    return blackScholesCalculatorInstance.calculatePrice(stockPrice, strikePrice, timeToExpirationYears, impliedVolatility, optionType, daysToExpiration)
 
 if __name__ == "__main__":
     # Demo of clean API

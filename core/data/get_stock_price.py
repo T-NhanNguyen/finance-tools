@@ -46,18 +46,28 @@ class PricePeriod(Enum):
 
 def getCurrentPrice(ticker: str) -> Optional[float]:
     """
-    Get the current price for a single stock ticker.
-    
-    Args:
-        ticker: Stock symbol (e.g., 'AAPL', 'GOOGL')
-        
-    Returns:
-        Current price as float, or None if retrieval fails
+    Get the current price for a single stock ticker with robust fallback logic.
     """
+    ticker = ticker.upper()
     try:
         stock = yf.Ticker(ticker)
-        currentPrice = stock.info.get('currentPrice') or stock.info.get('regularMarketPrice')
-        return currentPrice
+        # 1. Try stock.info (Fastest but often throttled/None)
+        info = stock.info
+        currentPrice = info.get('currentPrice') or info.get('regularMarketPrice')
+        if currentPrice and currentPrice > 0:
+            return float(currentPrice)
+            
+        # 2. Try yf.download (Much more reliable for current session)
+        data = yf.download(ticker, period="1d", interval="1m", progress=False, auto_adjust=True)
+        if not data.empty:
+            return float(data['Close'].iloc[-1])
+
+        # 3. Fallback to historical daily close
+        hist = stock.history(period="5d")
+        if not hist.empty:
+            return float(hist['Close'].iloc[-1])
+            
+        return None
     except Exception as error:
         print(f"Error fetching current price for {ticker}: {error}")
         return None

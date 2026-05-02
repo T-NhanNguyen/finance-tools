@@ -2,13 +2,50 @@ import os
 import json
 import time
 import glob
+import threading
 from typing import Dict, List, Optional
 from collections import OrderedDict
+import pytz
+from datetime import datetime, time as dtime, timedelta
 
-# Constants mirrored from bulk_data_loader to avoid circular imports
+# Constants
 CACHE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".gex_cache"))
-CACHE_EXPIRY = 900  # 15 minutes
+LIVE_TTL = 900  # 15 minutes during market hours
 MAX_MEM_ENTRIES = 50
+CACHE_EXPIRY = LIVE_TTL  # For backward compatibility
+
+def get_market_status():
+    """
+    Returns (is_open, last_close, next_open) in Eastern Time.
+    US Market: 9:30 AM - 4:00 PM ET, Mon-Fri.
+    Accounting for ~30 min data delay, 'settlement' is at 4:30 PM ET.
+    """
+    tz = pytz.timezone('US/Eastern')
+    now = datetime.now(tz)
+    
+    # Settlement time is 30 mins after close
+    settle_time = dtime(16, 30)
+    
+    # Check if weekend
+    if now.weekday() >= 5:
+        is_open = False
+    # Market is 'moving' until 4:30 PM due to delay
+    elif now.time() < dtime(9, 30) or now.time() >= settle_time:
+        is_open = False
+    else:
+        is_open = True
+        
+    # Calculate last close settlement (when we expect final daily data to be available)
+    if now.time() < settle_time:
+        # Last settlement was yesterday (or Friday)
+        days_back = 3 if now.weekday() == 0 else 1
+        if now.weekday() >= 5: days_back = now.weekday() - 4
+        last_settle = now.replace(hour=16, minute=30, second=0, microsecond=0) - timedelta(days=days_back)
+    else:
+        # Last settlement was today
+        last_settle = now.replace(hour=16, minute=30, second=0, microsecond=0)
+        
+    return is_open, last_settle, now
 
 class CacheManager:
     """
@@ -17,6 +54,7 @@ class CacheManager:
     """
     def __init__(self):
         self._mem_cache: OrderedDict[str, Dict] = OrderedDict()
+        self._lock = threading.Lock()
         if not os.path.exists(CACHE_DIR):
             os.makedirs(CACHE_DIR, exist_ok=True)
 
@@ -24,6 +62,21 @@ class CacheManager:
         """Standardized key for both memory and disk lookups."""
         exp_hash = expiration if expiration else "nearest"
         return f"{ticker.upper()}_{exp_hash.replace('-', '')}"
+
+    def _is_expired(self, entry_timestamp: float) -> bool:
+        """Determines if a cache entry is expired based on market hours."""
+        is_open, last_close, now = get_market_status()
+        
+        # entry_dt in ET
+        entry_dt = datetime.fromtimestamp(entry_timestamp, pytz.utc).astimezone(pytz.timezone('US/Eastern'))
+        
+        if is_open:
+            # During market hours, use 15-minute TTL
+            return (datetime.now(pytz.timezone('US/Eastern')) - entry_dt).total_seconds() > LIVE_TTL
+        else:
+            # When market is closed, data is fresh if it was fetched after the last market close
+            # This ensures we have the final closing data and keep it until next open
+            return entry_dt < last_close
 
     def _get_path(self, key: str) -> str:
         return os.path.join(CACHE_DIR, f"{key}.json")
@@ -35,25 +88,31 @@ class CacheManager:
         """
         key = self._get_cache_key(ticker, expiration)
         
-        # 1. Memory Hit
-        if key in self._mem_cache:
-            entry = self._mem_cache[key]
-            if (time.time() - entry["timestamp"]) < CACHE_EXPIRY:
-                self._mem_cache.move_to_end(key)
-                return entry["data"]
-            else:
-                del self._mem_cache[key]
+        with self._lock:
+            # 1. Memory Hit
+            if key in self._mem_cache:
+                entry = self._mem_cache[key]
+                if not self._is_expired(entry["timestamp"]):
+                    self._mem_cache.move_to_end(key)
+                    return entry["data"]
+                else:
+                    del self._mem_cache[key]
 
-        # 2. Disk Check
-        path = self._get_path(key)
-        if os.path.exists(path):
-            mtime = os.path.getmtime(path)
-            if (time.time() - mtime) < CACHE_EXPIRY:
+            # 2. Disk Check
+            path = self._get_path(key)
+            if os.path.exists(path):
                 try:
-                    with open(path, 'r') as f:
-                        data = json.load(f)
-                    self.put(ticker, expiration, data, skip_disk=True)
-                    return data
+                    mtime = os.path.getmtime(path)
+                    if not self._is_expired(mtime):
+                        with open(path, 'r') as f:
+                            data = json.load(f)
+                        # Put in memory for next time
+                        self._mem_cache[key] = {
+                            "data": data,
+                            "timestamp": mtime
+                        }
+                        self._mem_cache.move_to_end(key)
+                        return data
                 except Exception:
                     pass
         
@@ -66,24 +125,30 @@ class CacheManager:
         """
         key = self._get_cache_key(ticker, expiration)
         
-        # Update memory
-        self._mem_cache[key] = {
-            "data": data,
-            "timestamp": time.time()
-        }
-        self._mem_cache.move_to_end(key)
-        
-        if len(self._mem_cache) > MAX_MEM_ENTRIES:
-            self._mem_cache.popitem(last=False)
+        with self._lock:
+            # Update memory
+            self._mem_cache[key] = {
+                "data": data,
+                "timestamp": time.time()
+            }
+            self._mem_cache.move_to_end(key)
+            
+            if len(self._mem_cache) > MAX_MEM_ENTRIES:
+                self._mem_cache.popitem(last=False)
 
-        # Update disk
-        if not skip_disk:
-            path = self._get_path(key)
-            try:
-                with open(path, 'w') as f:
-                    json.dump(data, f)
-            except Exception:
-                pass
+            # Update disk atomically
+            if not skip_disk:
+                path = self._get_path(key)
+                tmp_path = f"{path}.tmp"
+                try:
+                    with open(tmp_path, 'w') as f:
+                        json.dump(data, f)
+                    os.replace(tmp_path, path)
+                    # print(f"DEBUG: Wrote {key} to {path}")
+                except Exception as e:
+                    print(f"DEBUG: Failed to write {key}: {e}")
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
 
     def is_fresh(self, ticker: str, expiration: Optional[str]) -> bool:
         """Checks if a fresh cache entry exists without loading full payload."""
@@ -91,13 +156,13 @@ class CacheManager:
         
         # Check memory
         if key in self._mem_cache:
-            if (time.time() - self._mem_cache[key]["timestamp"]) < CACHE_EXPIRY:
+            if not self._is_expired(self._mem_cache[key]["timestamp"]):
                 return True
         
         # Check disk
         path = self._get_path(key)
         if os.path.exists(path):
-            return (time.time() - os.path.getmtime(path)) < CACHE_EXPIRY
+            return not self._is_expired(os.path.getmtime(path))
             
         return False
 

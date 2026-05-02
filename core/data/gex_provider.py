@@ -8,9 +8,8 @@ import pandas as pd
 from typing import List, Dict, Optional
 from datetime import datetime
 
-from core.data import (
-    getOptionChain, getOptionExpirations, getCurrentPrice
-)
+from core.data.get_options_data import getOptionChain, getOptionExpirations
+from core.data.get_stock_price import getCurrentPrice
 from core.analysis import calculateGamma
 
 OPTION_CHAIN_LENGTH = 50
@@ -95,6 +94,7 @@ def fetch_gex_data_raw(ticker: str, expiration_input: Optional[str] = None) -> D
     puts = chain.get('puts')
     
     if calls is None or puts is None:
+        print(f"Error: Could not fetch option chain for {ticker} at {expiration}")
         return {"error": "Could not fetch option chain", "ticker": ticker, "details": f"Expiration: {expiration}"}
     
     # Calculate time to expiration
@@ -118,17 +118,19 @@ def fetch_gex_data_raw(ticker: str, expiration_input: Optional[str] = None) -> D
     puts['gex'] = -puts['gamma'] * puts['openInterest'] * 100 * spot_price
     
     # Aggregate by strike
-    calls_agg = calls[['strike', 'gex', 'openInterest', 'bid', 'ask', 'impliedVolatility']].groupby('strike').agg({
+    calls_agg = calls[['strike', 'gex', 'openInterest', 'volume', 'bid', 'ask', 'impliedVolatility']].groupby('strike').agg({
         'gex': 'sum',
         'openInterest': 'sum',
+        'volume': 'sum',
         'bid': 'first',
         'ask': 'first',
         'impliedVolatility': 'first'
     }).reset_index()
     
-    puts_agg = puts[['strike', 'gex', 'openInterest', 'bid', 'ask', 'impliedVolatility']].groupby('strike').agg({
+    puts_agg = puts[['strike', 'gex', 'openInterest', 'volume', 'bid', 'ask', 'impliedVolatility']].groupby('strike').agg({
         'gex': 'sum',
         'openInterest': 'sum',
+        'volume': 'sum',
         'bid': 'first',
         'ask': 'first',
         'impliedVolatility': 'first'
@@ -167,12 +169,13 @@ def fetch_gex_data_raw(ticker: str, expiration_input: Optional[str] = None) -> D
     for _, row in plot_df.iterrows():
         strike = float(row['strike'])
         strikes.append({
-            "strike": strike,
+            "strike": float(strike),
             "gexMillions": float(row['totalGEX'] / 1e6),
             "openInterestThousands": float(row['totalOI'] / 1e3),
-            "isATM": (strike == atm_strike),
+            "isATM": bool(strike == atm_strike),
             "normalizedGEX": float(row['totalGEX'] / max_gex_absolute),
             "normalizedOI": float(row['totalOI'] / max_open_interest),
+            "volume": float(row.get('volume_call', 0) + row.get('volume_put', 0)),
             "callBid": float(row['bid_call']),
             "callAsk": float(row['ask_call']),
             "callIV": float(row['impliedVolatility_call']),

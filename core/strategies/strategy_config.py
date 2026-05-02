@@ -17,8 +17,9 @@ as needed for alternative scenarios.
 # The sum becomes your total working capital (P_0).
 # ===========================================================
 LENDERS = [
-    100_000,   # Lender 1
-    17_300,
+    100_000,    # Tam
+    17_300,     # Mom
+    62_270,     # gains and others
 ]
 
 # Annual interest rate on all loans (flat rate applied to total principal).
@@ -127,3 +128,76 @@ MAINTENANCE_MARGIN_REQ = 0.25
 # Safety & Moneyness thresholds
 MIN_MONEYNESS_PCT = 0.02  # 2% floor to qualify for any engine (eliminates ATM pin risk)
 WHEEL_MONEYNESS_MAX = 0.05  # 5% ceiling for Wheel Engine, above is Cash Engine (separates income trading from wheel preparation)
+
+
+# ===========================================================
+# OPTION STRIKE OPTIMIZER SCENARIOS
+# ===========================================================
+
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional
+
+@dataclass
+class ScenarioConfig:
+    name: str
+    direction: str  # bullish or bearish
+    time_horizon_days: int
+    expected_move_type: str  # options or volatility
+    min_delta: float
+    max_delta: float
+    min_open_interest: int = 500  # Default minimum liquidity
+    scoring_weights: Dict[str, float] = field(default_factory=dict)
+
+SCENARIOS = {
+    "bullish_3month": ScenarioConfig(
+        name="Bullish 3-Month",
+        direction="bullish",
+        time_horizon_days=90,
+        expected_move_type="volatility",
+        min_delta=0.35,
+        max_delta=0.60,
+        min_open_interest=1000,
+        scoring_weights={
+            "gex_weight": 0.30,
+            "liquidity_weight": 0.25,
+            "prob_weight": 0.20,
+            "ev_weight": 0.12,
+            "theta_weight": 0.08,
+            "spreadcost_weight": 0.05
+        }
+    ),
+    "earnings": ScenarioConfig(
+        name="Earnings Play",
+        direction="bullish",
+        time_horizon_days=14,
+        expected_move_type="options",
+        min_delta=0.30,
+        max_delta=0.65,
+        min_open_interest=500,
+        scoring_weights={
+            "gex_weight": 0.28,
+            "liquidity_weight": 0.22,
+            "prob_weight": 0.18,
+            "ev_weight": 0.15,
+            "theta_weight": 0.12,
+            "spreadcost_weight": 0.05
+        }
+    ),
+    "ta_breakout": ScenarioConfig(
+        name="TA Breakout",
+        direction="bullish",
+        time_horizon_days=30,
+        expected_move_type="volatility",
+        min_delta=0.35,
+        max_delta=0.55,
+        min_open_interest=1000,
+        scoring_weights={
+            "gex_weight": 0.32,
+            "liquidity_weight": 0.25,
+            "prob_weight": 0.18,
+            "ev_weight": 0.10,
+            "theta_weight": 0.08,
+            "spreadcost_weight": 0.07
+        }
+    )
+}

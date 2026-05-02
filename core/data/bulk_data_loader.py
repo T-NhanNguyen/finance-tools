@@ -5,70 +5,64 @@ import threading
 from typing import List, Dict, Optional
 from concurrent.futures import ThreadPoolExecutor
 from core.data.gex_provider import fetch_gex_data_raw
-from api.cache_manager import cache_manager, CACHE_DIR, CACHE_EXPIRY
+from api.cache_manager import cache_manager
 
-_FETCH_LOCK = threading.Lock()
-FETCH_STAGGER_DELAY = 0.5  # seconds between live network requests to avoid rate limiting
-MAX_FETCH_RETRIES = 3
+_TICKER_LOCKS: Dict[str, threading.Lock] = {}
+_LOCK_ATTR_LOCK = threading.Lock()
+FETCH_STAGGER_DELAY = 0.5
+MAX_FETCH_RETRIES = 2
+FAILURE_TTL = 300  # 5 minutes failure cache
 
-
-def _get_cache_path(ticker: str, expiration: Optional[str]) -> str:
-    """Calculates flat-file absolute path to workspace buffers"""
-    if not os.path.exists(CACHE_DIR):
-        os.makedirs(CACHE_DIR, exist_ok=True)
-    exp_hash = expiration if expiration else "nearest"
-    return os.path.join(CACHE_DIR, f"{ticker.upper()}_{exp_hash.replace('-', '')}.json")
-
-def _load_from_cache(path: str) -> Optional[Dict]:
-    """Load JSON buffers assuming they are within TTL thresholds"""
-    if os.path.exists(path):
-        mtime = os.path.getmtime(path)
-        if (time.time() - mtime) < CACHE_EXPIRY:
-            try:
-                with open(path, 'r') as f:
-                    return json.load(f)
-            except Exception:
-                pass
-    return None
-
-def _save_to_cache(path: str, data: Dict) -> None:
-    """Commits node data payloads backwards into local buffer"""
-    try:
-        with open(path, 'w') as f:
-            json.dump(data, f)
-    except Exception:
-        pass
 
 def fetch_gex_single(ticker: str, expiration: Optional[str] = None) -> Dict:
-    """
-    Gets GEX data with local absolute caching.
-    Serializes live network requests via a lock to avoid rate limiting.
-    Retries up to MAX_FETCH_RETRIES times with exponential backoff on failure.
-    """
-    # 1. Check Cache Manager first (Memory + Disk)
+    """Gets GEX data with local absolute caching and failure protection."""
+    ticker = ticker.upper()
+    
+    # 1. Check Cache Manager first
     cached_data = cache_manager.get(ticker, expiration)
     if cached_data:
+        # print(f"DEBUG: Cache HIT for {ticker} {expiration}")
+        if "error" in cached_data:
+            return cached_data
         return cached_data
 
-    with _FETCH_LOCK:
+
+    # Get or create per-ticker lock
+    with _LOCK_ATTR_LOCK:
+        if ticker not in _TICKER_LOCKS:
+            _TICKER_LOCKS[ticker] = threading.Lock()
+        lock = _TICKER_LOCKS[ticker]
+
+    with lock:
         # Re-check cache after acquiring lock
         cached_data = cache_manager.get(ticker, expiration)
         if cached_data:
             return cached_data
 
-        last_result = {"error": f"All {MAX_FETCH_RETRIES} fetch attempts failed", "ticker": ticker}
+        last_result = {"error": "Fetch failed", "ticker": ticker}
         for attempt in range(MAX_FETCH_RETRIES):
-            time.sleep(FETCH_STAGGER_DELAY * (2 ** attempt))
+            if attempt > 0:
+                time.sleep(FETCH_STAGGER_DELAY * (2 ** attempt))
+            
             data = fetch_gex_data_raw(ticker, expiration)
             if "error" not in data:
-                strikes = data.get("strikes", [])
-                total_bids = sum((s.get("putBid", 0) or 0) + (s.get("callBid", 0) or 0) for s in strikes)
-                if strikes and total_bids > 0:
+                # Basic validation: ensure we have strikes and a valid price
+                if data.get("strikes") and data.get("spotPrice", 0) > 0:
                     cache_manager.put(ticker, expiration, data)
-                return data
-            last_result = data
-
-    return last_result
+                    return data
+                else:
+                    last_result = {"error": "Invalid data (0 price or empty strikes)", "ticker": ticker}
+            else:
+                last_result = data
+        
+        # Cache the failure briefly to avoid spamming the API
+        # We wrap it in a special error dict so cache_manager can still see it
+        # but OptionStrikeOptimizer knows it's a failure.
+        # Actually, let's just use the error dict directly.
+        # NOTE: CacheManager.put uses time.time() as timestamp.
+        # If we put an error dict, it will be "fresh" for FAILURE_TTL if we adjust _is_expired
+        # For now, let's just NOT cache failures but optimize the path.
+        return last_result
 
 def fetch_gex_bulk(tickers: List[str], expiration: Optional[str] = None, max_workers: int = 4) -> Dict[str, Dict]:
     """
@@ -127,6 +121,57 @@ def fetch_all_expirations(ticker: str) -> Dict[str, str]:
         # but we don't wait for results. 
 
     return status_map
+
+def fetch_gex_all_expirations(ticker: str) -> Dict:
+    """
+    Fetches GEX data for all available expirations for a ticker.
+    Aggregates high-level metrics for each expiration.
+    Returns a dict structure compatible with OptionStrikeOptimizer.
+    """
+    ticker = ticker.upper()
+    nearest_data = fetch_gex_single(ticker, None)
+    if "error" in nearest_data:
+        return nearest_data
+        
+    available_expirations = nearest_data.get("availableExpirations", [])
+    if not available_expirations:
+        return nearest_data
+        
+    expirations_metrics = []
+    spot_price = nearest_data["spotPrice"]
+    
+    # We'll use a thread pool to fetch all expirations concurrently
+    def fetch_metrics(exp):
+        data = fetch_gex_single(ticker, exp)
+        if "error" in data:
+            return None
+        
+        strikes = data.get("strikes", [])
+        total_oi = sum(s.get("openInterestThousands", 0) for s in strikes) * 1000
+        total_gex = sum(s.get("gexMillions", 0) for s in strikes) * 1e6
+        total_volume = sum(s.get("volume", 0) for s in strikes) # Assuming we add volume to gex_provider
+        
+        return {
+            "expiration": exp,
+            "daysToExpiration": data.get("daysToExpiration", 0),
+            "totalOI": total_oi,
+            "volume": total_volume,
+            "netGEX": total_gex,
+            "gex_density": abs(total_gex) / (total_oi if total_oi > 0 else 1),
+            "spotPrice": spot_price
+        }
+
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        results = list(executor.map(fetch_metrics, available_expirations))
+        
+    expirations_metrics = [r for r in results if r is not None]
+    
+    return {
+        "ticker": ticker,
+        "spotPrice": spot_price,
+        "expirations": expirations_metrics,
+        "availableExpirations": available_expirations
+    }
 
 def get_cached_option_chain(ticker: str, expiration: Optional[str]) -> Optional[Dict]:
     """
