@@ -1,192 +1,82 @@
-# Full Project Recap: Rule-Based Option Strike/Expiration Optimizer
+# Option Strike Optimizer: Institutional Alpha via Market Microstructure
 
-## Project Overview
+## The Philosophy: Trading with Structural Footprints
 
-Built a **two-stage optimizer** for debit spreads and long single-leg options that leverages:
-- Black-Scholes pricing and Greeks (Gamma, Delta, Theta)
-- Open Interest (OI), volume, and Gamma Exposure (GEX) for market structure analysis
-- Support/resistance levels via subprocess call to external module
-- Scenario-based scoring for 3 different trading scenarios
+Most traders select option strikes based on "gut feel" or simple Delta thresholds (e.g., "I always buy 30-delta calls"). While Delta represents a mathematical probability, it ignores the **structural forces** that actually move or pin the price of an underlying stock.
+
+The **Option Strike Optimizer** is designed to move beyond "blind" probability. It treats the stock market as a liquidity landscape where **Market Makers (MMs)** and **Institutional Anchors** dictate the path of least resistance. By identifying where these players are positioned, we can select strikes that aren't just "likely" to be profitable, but are **structurally supported** by the market's own mechanics.
 
 ---
 
-## Implementation Breakdown
+## 1. The Structural Pillars (The "Where")
 
-### 1. Core Architecture
+The optimizer identifies specific price levels where the market is likely to pause, pivot, or accelerate. We look for **confluence**—the overlap of multiple independent signals.
 
-**File**: `core/strategies/option_strike_optimizer.py`
+### Gamma Exposure (GEX) Walls & Clusters
+Market Makers hedge their options portfolios by buying or selling the underlying stock. 
+- **The Walls**: We identify the "Call Wall" and "Put Wall"—specific strikes with the highest absolute Gamma. These act as "magnets" (attracting price) or "sticky zones" (pinning price) as expiration approaches.
+- **The Clusters**: Beyond single strikes, we detect **GEX Zones** (strikes above the 60th percentile of exposure). A strike inside a cluster is more robust than an isolated level because it represents a broad band of institutional hedging interest.
 
-**Key Classes/Functions**:
+### Institutional Anchors (SMA 20/50)
+We incorporate the **20-day and 50-day Simple Moving Averages (SMAs)**. These are not just "indicators"; they are levels where institutional rebalancing and algorithmic "buy/sell programs" are triggered. When a GEX wall coincides with a 50-day SMA, we consider that level a "Primary Anchor."
 
-| Component | Purpose |
-|-----------|---------|
-| `OptionStrikeOptimizer` | Main class mirroring `ContractSellingAnalyst` pattern |
-| `fetch_gex_single(ticker)` | Fetches GEX-extended option chain data |
-| `filter_expirations(chain_data, scenario)` | Stage 1: Filters expirations by OI, volume, GEX density |
-| `calculate_expected_move(chain_data, expiration, scenario)` | Calculates expected price movement range |
-| `generate_single_leg_candidates(chain_data, scenario)` | Stage 2: Generates single-leg candidates |
-| `generate_debit_spread_candidates(chain_data, scenario)` | Stage 2: Generates debit spread candidates |
-| `calculate_metrics_single_leg(...)`, `calculate_metrics_debit_spread(...)` | Scoring model with EV, prob, GEX alignment |
-| `analyze_strike(ticker, scenario, strike_type, option_type)` | Main entry point |
-| `run_single_ticker(...)`, `run_multi_ticker(...)` | Scanner support |
-
-### 2. Two-Stage Pipeline
-
-**Stage 1: Expiration Filtering**
-- Filters by minimum OI (default: $100K)
-- Filters by minimum volume (default: 100 contracts)
-- Prioritizes expirations with high GEX density
-- Handles negative `daysToExpiration` from data source
-
-**Stage 2: Strike Scoring**
-- Black-Scholes Greeks calculation (Delta, Gamma, Theta, Vega)
-- Support/resistance alignment scoring
-- GEX density scoring
-- Theta decay scoring
-- EV (Expected Value) scoring
-
-### 3. Scenario Support
-
-| Scenario | Direction | Time Horizon | Use Case |
-|----------|-----------|--------------|----------|
-| `bullish_3month` | Bullish | ~90 days | General bullish outlook |
-| `earnings` | Directional | ~14 days | Earnings play |
-| `ta_breakout` | Directional | Variable | Technical breakout |
-
-Each scenario has different scoring weights:
-- `prob_weight`: Probability of hitting target
-- `ev_weight`: Expected value score
-- `gex_weight`: GEX alignment score
-- `theta_weight`: Theta decay score
-
-### 4. Unique Implementation Considerations
-
-| Consideration | Implementation Detail | Rationale |
-|--------------|----------------------|-----------|
-| **Negative DTE Handling** | `if dte <= 0: dte = 30` | yfinance sometimes returns -1 for daysToExpiration |
-| **Subprocess SR Integration** | Calls `python-stock-support-resistance/main.py` via subprocess | Leverages existing k-means clustering for support/resistance detection |
-| **NaN Propagation** | Added `isinstance(x, float) and (np.isnan(x) or np.isinf(x))` checks | Prevents NaN from breaking scoring calculations |
-| **GEX Data Structure** | Converts `chain_data["strikes"]` (list) to DataFrame | Standardizes data format across codebase |
-| **Delta Range** | Expanded from 0.20-0.70 to 0.05-0.95 | Captures far OTM and deep ITM opportunities |
-| **Separate Buying/Selling** | Built as standalone module (not integrated with `ContractSellingAnalyst`) | Buying strategies have different constraints than selling |
-
-### 5. Scoring Model Details
-
-**Single-Leg Scoring**:
-```
-Score = EV_Score * ev_weight + Prob_Score * prob_weight + GEX_Bonus * gex_weight + Theta_Adjustment * theta_weight
-```
-
-Where:
-- **EV Score**: Normalized expected value (0.0 to 1.0)
-- **Prob Score**: Probability of hitting target price
-- **GEX Bonus**: Multiplier for GEX alignment (+0.1 if aligned with GEX peak)
-- **Theta Adjustment**: Penalty for high negative theta
-
-**Debit Spread Scoring**:
-- Uses break-even analysis instead of target price
-- Considers both long and short leg deltas
-- Calculates max loss vs max profit ratio
+### Multi-Method Support & Resistance
+The engine uses three distinct layers to find price floors and ceilings:
+1. **K-Means Clustering**: Statistical grouping of historical price action to find "memory zones."
+2. **Local Extrema**: Identifying recent swing highs and lows (last 20 days).
+3. **Rounded Psych Levels**: Natural human/algorithmic attraction to whole numbers (e.g., $450, $500).
 
 ---
 
-## How to Run
+## 2. Expected Move Dynamics (The "How Far")
 
-### Single-Ticker Analysis
+Before picking a strike, we must define the "Playing Field."
 
-**Command**:
-```bash
-docker-compose run --rm finance-tools python -c "
-from core.strategies import OptionStrikeOptimizer
-opt = OptionStrikeOptimizer()
-result = opt.analyze_strike('SPY', scenario='bullish_3month', strike_type='single_leg', option_type='call')
-print(result['top_candidates'])
-"
-```
+### Implied vs. Realized Volatility
+The optimizer computes the **Expected Move** by blending two perspectives:
+1. **Options Pricing (The Straddle)**: What the market is *currently* pricing in via the At-The-Money (ATM) straddle.
+2. **Statistical Volatility (1σ)**: What the stock's actual price movement history suggests is a 68% probability range.
 
-### Multi-Ticker Analysis
-
-**Command**:
-```bash
-docker-compose run --rm finance-tools python -c "
-from core.strategies import OptionStrikeOptimizer
-opt = OptionStrikeOptimizer()
-for ticker in ['SPY', 'QQQ', 'IWM']:
-    result = opt.analyze_strike(ticker, scenario='bullish_3month', strike_type='single_leg', option_type='call')
-    print(f'{ticker}: {len(result[\"top_candidates\"])} candidates')
-"
-```
-
-### Test Script (Recommended)
-
-**Command**:
-```bash
-docker-compose run --rm finance-tools python /app/scripts/test_optimizer.py
-```
-
-This runs all three test scenarios:
-1. Single-leg call analysis on SPY
-2. Debit spread analysis on SPY
-3. Multi-ticker analysis on SPY and QQQ
+### Earnings Intelligence (The Move Richness)
+During earnings season, implied volatility (IV) skyrockets. The optimizer performs a deep-dive into the last 8 earnings cycles:
+- **Priced-in vs. Realized**: If the market is pricing in a 5% move but the stock historically moves 8%, the options are "Cheap" (High Move Richness). 
+- **Bound Expansion**: If a stock historically over-delivers on its move, the optimizer **widens the target range** to ensure we aren't selecting strikes that "cap" our potential profit too early.
 
 ---
 
-## Key Command Differences from Selling Strategy
+## 3. The Scoring Engine (The "Why")
 
-| Operation | Contract Selling Analyst | Option Strike Optimizer |
-|-----------|-------------------------|------------------------|
-| **Entry Point** | `ContractSellingAnalyst.analyze()` | `OptionStrikeOptimizer.analyze_strike()` |
-| **Data Source** | Standard yfinance chain | GEX-extended chain via `fetch_gex_single()` |
-| **Stage 1** | No expiration filtering | Expiration filtering by OI/volume/GEX |
-| **Scoring** | Premium collected, time decay | Expected value, prob of target, GEX alignment |
-| **SR Integration** | None | Subprocess call to external SR module |
+Every candidate is scored from **0.0 to 1.0**. The score is a weighted hierarchy reflecting our core priorities:
 
----
-
-## Files Created/Modified
-
-| File | Purpose |
-|------|---------|
-| `core/strategies/option_strike_optimizer.py` | Main implementation |
-| `core/strategies/__init__.py` | Export class |
-| `core/data/__init__.py` | Export data functions |
-| `core/analysis/__init__.py` | Export analysis functions |
-| `scripts/test_optimizer.py` | Test script |
-| `scripts/README.md` | Test script documentation |
-| `Implementation Plan_ Rule-Based Option Strike_Expi.md` | Technical spec |
+| Factor | Weight | Rationale |
+|---|---|---|
+| **GEX Alignment** | 30% | **The North Star.** If the strike isn't aligned with MM hedging zones, it's a "floating" trade with no structural support. |
+| **Liquidity** | 25% | **The Crowd.** High Open Interest and Volume act as a "consensus" filter. We avoid "ghost strikes" with wide bid-ask spreads. |
+| **Probability (POP)** | 20% | **The Math.** Using Normal CDF to ensure the trade has a statistically sound chance of expiring in-the-money. |
+| **Expected Value (EV)** | 12% | **The Reward.** A secondary signal to ensure the risk-to-reward ratio makes sense after all structural filters are applied. |
+| **Theta Penalty** | 8% | **The Clock.** We penalize high-decay candidates to ensure we aren't "paying too much for the time" we have. |
+| **Spread Cost** | 5% | **The Efficiency.** For spreads, we penalize debits that exceed 40% of the spread width. |
 
 ---
 
-## Bug Fixes Applied
+## 4. Strategy Mechanics
 
-### Issue 1: NaN Values in Expected P&L
+### Single-Leg (Long Calls/Puts)
+- **LEAPS Protection**: For long-dated options (>9 months), we tighten the Delta cap to **0.70**. This ensures we are buying high-leverage delta, not "overpaying for deep-ITM insurance" that behaves like a stock substitute.
+- **Directional Bias**: The engine automatically flips its logic for Bearish scenarios, identifying Put Walls and structural resistance.
 
-**Problem**: `expected_pnl` and `payoff_at_target` showed NaN values.
-
-**Root Cause**:
-1. `chain_data.get("daysToExpiration", 30)` returned -1 (negative), causing `sqrt(negative)` to return NaN
-2. `expirations` was defined AFTER `expected_move` calculation
-
-**Fix**:
-1. Added dte validation: `if dte is None or dte <= 0: dte = 30`
-2. Moved `filter_expirations` BEFORE `calculate_expected_move`
-
-**Result**: SPY top candidate now shows Expected P&L: $7.80
+### Debit Spreads (Bull Call / Bear Put)
+- **Symmetric Spreads**: We generate spreads where the **Short Strike** is positioned at or near a GEX wall. This lets the Market Maker's "pinning" behavior work *for* us by keeping the short strike OTM while the long strike gains value.
+- **Invalidation Levels**: For every spread, we surface a structural "Exit Point." If the price breaks the nearest Primary Support/Resistance, the structural thesis for the trade is dead, and the optimizer suggests an exit.
 
 ---
 
-## Test Results
+## 5. Mental Model for the Trader
 
-```
-SPY Top Candidate:
-  Expected P&L: $7.80
-  Delta: 0.35
-  Probability of Profit: 79%
-  Expiration: 2026-06-05
+When you look at a **Score of 0.85**, you aren't just seeing a "good trade." You are seeing a trade where:
+1. The **Market Makers** are positioned to support the price move.
+2. The **Institutional SMAs** provide a floor for your entry.
+3. The **Liquidity** ensures you can get out at a fair price.
+4. The **Earnings History** suggests the move is underpriced by the crowd.
 
-QQQ Top Candidate:
-  Expected P&L: $7.17
-  Delta: 0.50
-  Probability of Profit: 50%
-  Expiration: 2026-06-18
-```
+**Goal**: Don't just trade the ticker; trade the **market structure**.

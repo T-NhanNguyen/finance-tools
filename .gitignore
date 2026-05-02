@@ -16,3 +16,5 @@ test/
 # OS
 .DS_Store
 Thumbs.db
+
+*.png

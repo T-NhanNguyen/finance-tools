@@ -7,6 +7,7 @@ Greeks (delta, gamma, etc.) are not available via yfinance and are intentionally
 """
 
 import yfinance as yf
+import numpy as np
 import pandas as pd
 from typing import List, Dict, Optional, Tuple
 from enum import Enum
@@ -245,7 +246,84 @@ def filterInTheMoney(df: pd.DataFrame, itm_only: bool = True) -> pd.DataFrame:
         return df[~df["inTheMoney"]].copy()
 
 
+
+def getEarningsContext(ticker: str, atm_straddle_price: float = 0.0,
+                       spot_price: float = 0.0) -> Dict:
+    """Fetch upcoming earnings date and compute historical realized move context.
+
+    Returns a dict with:
+      next_date           - next earnings date string (YYYY-MM-DD) or None
+      days_to_earnings    - calendar days until next earnings
+      avg_realized_move   - mean abs 1-day move across past earnings events
+      move_richness       - priced_in_pct / avg_realized_move (>1 = expensive straddle)
+      realized_moves      - list of individual past moves
+    """
+    EARNINGS_HISTORY_LIMIT = 8
+    EARNINGS_WINDOW_DAYS = 1  # measure close-to-close on the announcement day
+
+    result = {
+        "next_date": None,
+        "days_to_earnings": None,
+        "avg_realized_move": None,
+        "move_richness": None,
+        "realized_moves": []
+    }
+
+    try:
+        stock = yf.Ticker(ticker)
+        earnings_dates_df = stock.get_earnings_dates(limit=EARNINGS_HISTORY_LIMIT)
+
+        if earnings_dates_df is None or earnings_dates_df.empty:
+            return result
+
+        today = datetime.now().date()
+
+        # Normalize index to date objects for comparison
+        earnings_dates_df.index = pd.to_datetime(earnings_dates_df.index).date
+
+        future_dates = [d for d in earnings_dates_df.index if d > today]
+        past_dates = [d for d in earnings_dates_df.index if d <= today]
+
+        if future_dates:
+            next_earnings_date = min(future_dates)
+            result["next_date"] = str(next_earnings_date)
+            result["days_to_earnings"] = (next_earnings_date - today).days
+
+        # Compute realized moves around each past earnings date
+        realized_moves = []
+        for earnings_date in past_dates:
+            window_start = (datetime.combine(earnings_date, datetime.min.time()) -
+                            timedelta(days=2)).strftime("%Y-%m-%d")
+            window_end = (datetime.combine(earnings_date, datetime.min.time()) +
+                          timedelta(days=EARNINGS_WINDOW_DAYS + 1)).strftime("%Y-%m-%d")
+            hist = stock.history(start=window_start, end=window_end)
+
+            if hist is None or len(hist) < 2:
+                continue
+
+            prev_close = float(hist["Close"].iloc[-2])
+            event_close = float(hist["Close"].iloc[-1])
+            if prev_close > 0:
+                realized_move_pct = abs((event_close - prev_close) / prev_close)
+                realized_moves.append(round(realized_move_pct, 4))
+
+        if realized_moves:
+            avg_realized = float(np.mean(realized_moves))
+            result["avg_realized_move"] = round(avg_realized, 4)
+            result["realized_moves"] = realized_moves
+
+            if atm_straddle_price > 0 and spot_price > 0:
+                priced_in_pct = atm_straddle_price / spot_price
+                result["move_richness"] = round(priced_in_pct / avg_realized, 3) if avg_realized > 0 else None
+
+    except Exception as error:
+        print(f"Warning: Could not fetch earnings context for {ticker}: {error}")
+
+    return result
+
+
 # Example usage
+
 if __name__ == "__main__":
     ticker = "IREN"
     

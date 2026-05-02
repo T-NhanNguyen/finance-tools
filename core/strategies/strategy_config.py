@@ -199,5 +199,22 @@ SCENARIOS = {
             "theta_weight": 0.08,
             "spreadcost_weight": 0.07
         }
+    ),
+    "bearish_hedge": ScenarioConfig(
+        name="Bearish Hedge",
+        direction="bearish",
+        time_horizon_days=30,
+        expected_move_type="volatility",
+        min_delta=0.35,
+        max_delta=0.55,
+        min_open_interest=1000,
+        scoring_weights={
+            "gex_weight": 0.35,
+            "liquidity_weight": 0.25,
+            "prob_weight": 0.15,
+            "ev_weight": 0.10,
+            "theta_weight": 0.10,
+            "spreadcost_weight": 0.05
+        }
     )
 }

@@ -26,7 +26,7 @@ LEAPS_DTE_THRESHOLD = 270  # LEAPS are typically 9 months+
 # Add app to path
 sys.path.insert(0, '/app')
 
-from core.data.get_options_data import getOptionChain
+from core.data.get_options_data import getOptionChain, getEarningsContext
 from core.data.bulk_data_loader import fetch_gex_all_expirations, fetch_gex_single
 from core.data.get_gex_data import fetch_gex_structured
 from core.analysis.calculate_gamma_delta import calculateDelta, calculateGamma, calculateBlackScholesPrice
@@ -87,7 +87,22 @@ class OptionStrikeOptimizer:
         
         # Step 3: Calculate expected move using first filtered expiration
         first_exp = expirations[0]["expiration"]
-        expected_move = calculate_expected_move(chain_data, first_exp, scenario_config)
+
+        # Earnings context: only fetched for earnings scenario (avoids unnecessary API calls)
+        earnings_context = None
+        if scenario_config.name == "Earnings Play":
+            # Preliminary expected move needed to compute move_richness
+            preliminary_move = calculate_expected_move(chain_data, first_exp, scenario_config)
+            atm_straddle_price = preliminary_move.get("expected_move", 0)
+            earnings_context = getEarningsContext(
+                ticker,
+                atm_straddle_price=atm_straddle_price,
+                spot_price=spot_price
+            )
+
+        expected_move = calculate_expected_move(
+            chain_data, first_exp, scenario_config, earnings_context=earnings_context
+        )
         
         # Step 4: Generate strike candidates
         candidates = []
@@ -351,7 +366,8 @@ def filter_expirations_v2(chain_data: Dict, scenario: ScenarioConfig) -> List[Di
 
 
 def calculate_expected_move(chain_data: Dict, expiration: str,
-                           scenario: ScenarioConfig) -> Dict:
+                           scenario: ScenarioConfig,
+                           earnings_context: Dict = None) -> Dict:
     """Calculate expected move and GEX dominant levels for an expiration."""
     spot_price = chain_data.get("spotPrice", 0)
     ticker = chain_data.get("ticker", "")
@@ -440,12 +456,23 @@ def calculate_expected_move(chain_data: Dict, expiration: str,
             # If Put Wall is above spot, it might act as resistance
             upper_expected = min(upper_expected, gex_levels["put_wall"])
         
+    # 4. Earnings Context: widen bounds when historical realized moves exceed priced-in move
+    if earnings_context and earnings_context.get("avg_realized_move"):
+        avg_realized = earnings_context["avg_realized_move"]
+        priced_in_pct = expected_move / spot_price if spot_price > 0 else 0
+        if avg_realized > priced_in_pct:
+            # Historical move > straddle pricing: use realized avg to set targets
+            realized_move_dollars = avg_realized * spot_price
+            upper_expected = max(upper_expected, spot_price + realized_move_dollars)
+            lower_expected = min(lower_expected, spot_price - realized_move_dollars)
+
     return {
         "expected_move": float(expected_move),
         "upper_expected": float(upper_expected),
         "lower_expected": float(lower_expected),
         "atm_strike": float(atm_strike),
-        "gex_levels": gex_levels
+        "gex_levels": gex_levels,
+        "earnings_context": earnings_context or {}
     }
 
 
@@ -519,13 +546,16 @@ def generate_debit_spread_candidates(chain_data: Dict, scenario: ScenarioConfig,
     if filtered_expirations is None:
         filtered_expirations = chain_data.get("expirations", [])
         
+    is_bullish = scenario.direction == "bullish"
+    opt_key = "calls" if is_bullish else "puts"
+    
     for exp in filtered_expirations:
         exp_date = exp["expiration"]
         dte = exp.get("daysToExpiration") or exp.get("dte") or 30
         if dte is None or dte <= 0: continue
         
         chain = getOptionChain(chain_data.get("ticker", ""), expiration=exp_date)
-        options = chain.get("calls")
+        options = chain.get(opt_key)
         if options is None or options.empty: continue
         
         for _, row in options.iterrows():
@@ -535,11 +565,22 @@ def generate_debit_spread_candidates(chain_data: Dict, scenario: ScenarioConfig,
             is_leaps = dte >= LEAPS_DTE_THRESHOLD
             if is_leaps:
                 # Even for LEAPS, avoid extreme deep ITM
-                if long_strike < spot_price * 0.70: continue
+                if is_bullish:
+                    if long_strike < spot_price * 0.70: continue
+                else:
+                    if long_strike > spot_price * 1.30: continue
             else:
-                if long_strike < spot_price * 0.95: continue
+                if is_bullish:
+                    if long_strike < spot_price * 0.95: continue
+                else:
+                    if long_strike > spot_price * 1.05: continue
             
-            short_strike = long_strike + spread_width
+            # Short strike selection based on direction
+            if is_bullish:
+                short_strike = long_strike + spread_width
+            else:
+                short_strike = long_strike - spread_width
+                
             short_row = options[options["strike"] == short_strike]
             if short_row.empty: continue
             
@@ -550,6 +591,19 @@ def generate_debit_spread_candidates(chain_data: Dict, scenario: ScenarioConfig,
             # Risk/Reward Filter: Debit shouldn't be > 80% of width for spreads
             if debit <= 0 or debit > spread_width * 0.80: continue
             
+            # Calculate Greeks if missing
+            long_iv = row.get("impliedVolatility", 0.20)
+            short_iv = short_row.iloc[0].get("impliedVolatility", 0.20)
+            t = dte / 365.0
+            
+            long_delta = row.get("delta")
+            if long_delta is None or np.isnan(long_delta):
+                long_delta = calculateDelta(spot_price, long_strike, t, long_iv, "call" if is_bullish else "put")
+            
+            short_delta = short_row.iloc[0].get("delta")
+            if short_delta is None or np.isnan(short_delta):
+                short_delta = calculateDelta(spot_price, short_strike, t, short_iv, "call" if is_bullish else "put")
+            
             candidates.append({
                 "option_type": "debit_spread",
                 "long_strike": long_strike,
@@ -557,15 +611,18 @@ def generate_debit_spread_candidates(chain_data: Dict, scenario: ScenarioConfig,
                 "expiration": exp_date,
                 "dte": dte,
                 "debit": debit,
-                "long_iv": row.get("impliedVolatility", 0.20),
-                "long_delta": row.get("delta", 0),
-                "short_delta": short_row.iloc[0].get("delta", 0),
+                "long_iv": long_iv,
+                "short_iv": short_iv,
+                "long_delta": long_delta,
+                "short_delta": short_delta,
                 "long_gamma": row.get("gamma", 0),
                 "short_gamma": short_row.iloc[0].get("gamma", 0),
                 "long_theta": row.get("theta", 0),
                 "short_theta": short_row.iloc[0].get("theta", 0),
                 "long_vega": row.get("vega", 0),
                 "short_vega": short_row.iloc[0].get("vega", 0),
+                "long_oi": row.get("openInterest", 0),
+                "short_oi": short_row.iloc[0].get("openInterest", 0),
                 "metrics": {}
             })
     
@@ -645,21 +702,33 @@ def calculate_metrics_single_leg(candidate: Dict, spot_price: float,
     
     score = max(0.0, min(1.0, score))
     
-    # Fill metrics
-    candidate["score"] = round(score, 4)
-    candidate["metrics"]["score"] = candidate["score"]
-    candidate["metrics"]["ev_score"] = round(ev_score, 4)
-    candidate["metrics"]["probability_of_profit"] = round(prob_score, 4)
-    candidate["metrics"]["expected_pnl"] = round(expected_pnl, 2) if expected_pnl is not None else None
-    candidate["metrics"]["payoff_at_target"] = round(payoff, 2)
-    candidate["metrics"]["delta"] = round(candidate.get("delta", 0), 4)
-    candidate["metrics"]["gamma"] = round(candidate.get("gamma", 0), 6)
-    candidate["metrics"]["theta"] = round(candidate.get("theta", 0), 4)
-    candidate["metrics"]["vega"] = round(candidate.get("vega", 0), 4)
-    candidate["metrics"]["iv"] = round(candidate.get("iv", 0), 4)
-    candidate["metrics"]["prob_target"] = round(prob_target, 4)
-    
-    return candidate
+    # Invalidation Level (Stop-Loss)
+    invalidation_level = None
+    if is_bullish:
+        if support_resistance.get("support"):
+            invalidation_level = support_resistance["support"][0]
+    else:
+        if support_resistance.get("resistance"):
+            invalidation_level = support_resistance["resistance"][0]
+
+    return {
+        "score": round(score, 4),
+        "metrics": {
+            "score": round(score, 4),
+            "ev_score": round(ev_score, 4),
+            "probability_of_profit": round(prob_score, 4),
+            "expected_pnl": round(expected_pnl, 2) if expected_pnl is not None else None,
+            "payoff_at_target": round(payoff, 2),
+            "delta": round(candidate.get("delta", 0), 4),
+            "gamma": round(candidate.get("gamma", 0), 6),
+            "theta": round(candidate.get("theta", 0), 4),
+            "vega": round(candidate.get("vega", 0), 4),
+            "iv": round(candidate.get("iv", 0), 4),
+            "prob_target": round(prob_target, 4),
+            "invalidation_level": invalidation_level
+        },
+        **candidate
+    }
 
 
 def calculate_metrics_debit_spread(candidate: Dict, spot_price: float,
@@ -675,13 +744,19 @@ def calculate_metrics_debit_spread(candidate: Dict, spot_price: float,
     iv = candidate.get("long_iv", 0.20)
     t = dte / 365.0
     
-    # Probability of profit (Price > Breakeven at expiration)
-    break_even = candidate["long_strike"] + candidate["debit"]
-    d2 = (np.log(spot_price / break_even) + (- 0.5 * iv**2) * t) / (iv * np.sqrt(t))
-    prob_profit = norm.cdf(d2) if scenario.direction == "bullish" else 1 - norm.cdf(d2)
+    # Probability of profit (Price > Breakeven for call spreads, Price < Breakeven for put spreads)
+    is_bullish = scenario.direction == "bullish"
+    if is_bullish:
+        break_even = candidate["long_strike"] + candidate["debit"]
+        d2 = (np.log(spot_price / break_even) + (- 0.5 * iv**2) * t) / (iv * np.sqrt(t))
+        prob_profit = norm.cdf(d2)
+    else:
+        break_even = candidate["long_strike"] - candidate["debit"]
+        d2 = (np.log(spot_price / break_even) + (- 0.5 * iv**2) * t) / (iv * np.sqrt(t))
+        prob_profit = 1 - norm.cdf(d2)
     
     # Payoff at target
-    if scenario.direction == "bullish":
+    if is_bullish:
         if target_price >= candidate["short_strike"]:
             payoff = candidate["short_strike"] - candidate["long_strike"] - candidate["debit"]
         elif target_price >= candidate["long_strike"]:
@@ -703,7 +778,7 @@ def calculate_metrics_debit_spread(candidate: Dict, spot_price: float,
     prob_score = prob_profit
     
     # Max Profit/Loss Ratio
-    max_profit = candidate["short_strike"] - candidate["long_strike"] - candidate["debit"]
+    max_profit = abs(candidate["short_strike"] - candidate["long_strike"]) - candidate["debit"]
     max_loss = candidate["debit"]
     pl_score = min(1.0, (max_profit / max_loss) / 3) if max_loss > 0 else 0
     
@@ -757,6 +832,15 @@ def calculate_metrics_debit_spread(candidate: Dict, spot_price: float,
     
     score = max(0.0, min(1.0, score))
     
+    # Invalidation Level (Stop-Loss)
+    invalidation_level = None
+    if is_bullish:
+        if support_resistance.get("support"):
+            invalidation_level = support_resistance["support"][0]
+    else:
+        if support_resistance.get("resistance"):
+            invalidation_level = support_resistance["resistance"][0]
+
     # Fill metrics
     candidate["score"] = round(score, 4)
     candidate["metrics"]["score"] = candidate["score"]
@@ -776,6 +860,7 @@ def calculate_metrics_debit_spread(candidate: Dict, spot_price: float,
     candidate["metrics"]["gamma"] = round(candidate.get("long_gamma", 0) + candidate.get("short_gamma", 0), 6)
     candidate["metrics"]["theta"] = round(candidate.get("long_theta", 0) + candidate.get("short_theta", 0), 4)
     candidate["metrics"]["vega"] = round(candidate.get("long_vega", 0) + candidate.get("short_vega", 0), 4)
+    candidate["metrics"]["invalidation_level"] = invalidation_level
     
     return candidate
 
@@ -903,6 +988,17 @@ def run_optimizer_scanner():
         
         print(f"S/R: {sr.get('support', [])[:2]} / {sr.get('resistance', [])[:2]} | Range: ${em.get('lower_expected', 0):.0f}-${em.get('upper_expected', 0):.0f}")
         print(f"Walls: C: ${gl.get('call_wall')} | P: ${gl.get('put_wall')} | MP: ${gl.get('max_pain')}")
+        
+        ec = em.get("earnings_context", {})
+        if ec and ec.get("next_date"):
+            avg_move = ec.get("avg_realized_move")
+            richness = ec.get("move_richness")
+            richness_label = "cheap" if richness and richness < 1.0 else "expensive" if richness else "N/A"
+            print(
+                f"Earnings: {ec['next_date']} ({ec.get('days_to_earnings', '?')}d away) | "
+                f"Avg Realized Move: {avg_move:.1%}" if avg_move else "Avg Realized Move: N/A",
+                f"| Straddle: {richness_label}" + (f" ({richness:.2f}x)" if richness else "")
+            )
         
         candidates = result.get("top_candidates", [])
         if not candidates:
