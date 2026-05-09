@@ -1,5 +1,7 @@
 import pandas as pd
 import numpy as np
+import matplotlib
+import argparse
 from core.data import (
     getIndicators, IndicatorType, generateTradingSignals, 
     calculateTheilSenSlope, MINIMUM_SEGMENT_LENGTH, _getPiecewiseBoundaries,
@@ -108,7 +110,22 @@ def plotIndicators(ticker: str, period: PricePeriod = PricePeriod.SIX_MONTHS):
     print("Visualization complete.")
 
 if __name__ == "__main__":
-    import matplotlib
-    import sys
+
     matplotlib.use('Agg') # Headless mode
-    plotIndicators(sys.argv[1])
+    
+    parser = argparse.ArgumentParser(description='Visualize technical indicators for a stock.')
+    parser.add_argument('ticker', help='Stock ticker symbol (e.g. AAPL)')
+    parser.add_argument('--period', type=str, default='6mo', 
+                        choices=[p.value for p in PricePeriod],
+                        help='Time period for historical data (default: 6mo)')
+    
+    args = parser.parse_args()
+    
+    # Map the string value back to the PricePeriod enum
+    try:
+        selected_period = PricePeriod(args.period)
+    except ValueError:
+        print(f"Warning: Invalid period '{args.period}'. Falling back to 6mo.")
+        selected_period = PricePeriod.SIX_MONTHS
+        
+    plotIndicators(args.ticker.upper(), period=selected_period)

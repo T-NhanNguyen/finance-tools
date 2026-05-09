@@ -19,7 +19,7 @@ as needed for alternative scenarios.
 LENDERS = [
     100_000,    # Tam
     17_300,     # Mom
-    62_270,     # gains and others
+    54_700,     # gains and others
 ]
 
 # Annual interest rate on all loans (flat rate applied to total principal).
@@ -68,7 +68,7 @@ APPLIES_NIIT = False
 # ===========================================================
 
 # Default margin requirement if a ticker is missing from the dictionary
-DEFAULT_MARGIN_REQ = 0.70
+DEFAULT_MARGIN_REQ = 1.0
 
 # Global Toggle: When True, ignores ticker-specific margin_reqs and enforces 50% margin
 # for all trades to ensure maximum safety.

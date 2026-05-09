@@ -312,11 +312,6 @@ class OptionStrikeOptimizer:
         self.support_resistance_cache[ticker] = sr_data
         return sr_data
 
-
-# =============================================================================
-# Import existing functions from option_strike_optimizer.py
-# =============================================================================
-
 def filter_expirations_v2(chain_data: Dict, scenario: ScenarioConfig) -> List[Dict]:
     """Filter expirations based on scenario time horizon and structural density."""
     expirations = chain_data.get("expirations", [])
@@ -363,7 +358,6 @@ def filter_expirations_v2(chain_data: Dict, scenario: ScenarioConfig) -> List[Di
     # Sort by horizon score descending
     passing.sort(key=lambda x: x["horizon_score"], reverse=True)
     return passing[:10]
-
 
 def calculate_expected_move(chain_data: Dict, expiration: str,
                            scenario: ScenarioConfig,
@@ -711,24 +705,23 @@ def calculate_metrics_single_leg(candidate: Dict, spot_price: float,
         if support_resistance.get("resistance"):
             invalidation_level = support_resistance["resistance"][0]
 
-    return {
-        "score": round(score, 4),
-        "metrics": {
-            "score": round(score, 4),
-            "ev_score": round(ev_score, 4),
-            "probability_of_profit": round(prob_score, 4),
-            "expected_pnl": round(expected_pnl, 2) if expected_pnl is not None else None,
-            "payoff_at_target": round(payoff, 2),
-            "delta": round(candidate.get("delta", 0), 4),
-            "gamma": round(candidate.get("gamma", 0), 6),
-            "theta": round(candidate.get("theta", 0), 4),
-            "vega": round(candidate.get("vega", 0), 4),
-            "iv": round(candidate.get("iv", 0), 4),
-            "prob_target": round(prob_target, 4),
-            "invalidation_level": invalidation_level
-        },
-        **candidate
-    }
+    # Fill metrics
+    candidate["score"] = round(score, 4)
+    candidate["metrics"]["score"] = candidate["score"]
+    candidate["metrics"]["ev_score"] = round(ev_score, 4)
+    candidate["metrics"]["probability_of_profit"] = round(prob_score, 4)
+    candidate["metrics"]["expected_pnl"] = round(expected_pnl, 2) if expected_pnl is not None else None
+    candidate["metrics"]["payoff_at_target"] = round(payoff, 2)
+    candidate["metrics"]["delta"] = round(candidate.get("delta", 0), 4)
+    candidate["metrics"]["gamma"] = round(candidate.get("gamma", 0), 6)
+    candidate["metrics"]["theta"] = round(candidate.get("theta", 0), 4)
+    candidate["metrics"]["vega"] = round(candidate.get("vega", 0), 4)
+    candidate["metrics"]["iv"] = round(candidate.get("iv", 0), 4)
+    candidate["metrics"]["prob_target"] = round(prob_target, 4)
+    candidate["metrics"]["invalidation_level"] = invalidation_level
+
+    return candidate
+
 
 
 def calculate_metrics_debit_spread(candidate: Dict, spot_price: float,
