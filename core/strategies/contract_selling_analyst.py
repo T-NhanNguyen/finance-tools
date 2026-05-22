@@ -141,7 +141,10 @@ class ContractSellingAnalyst:
             "weeks_to_zero": round(weeks_to_zero, 1),
             "eff_cost_basis": round(eff_cost_basis, 2),
             "predicted_p_call": round(predicted_p_call, 2),
-            "capital_deployed": round(strike * 100 * contracts, 2)
+            "capital_deployed": round(strike * 100 * contracts, 2),
+            "open_interest": oi_value,
+            "volume": 0,  # Will be populated from chain data if available
+            "gex_magnitude": abs(gex_value),
         }
 
     def get_actionable_pillars(self, analyzed_list: List[Dict], engine_mode: str = "BOTH") -> Dict[str, List[Dict]]:
@@ -223,7 +226,10 @@ class ContractSellingAnalyst:
                        "Eff_Cost_Basis": p['eff_cost_basis'],
                        "Contracts": p.get('contracts', 0),
                        "Capital_Deployed": p.get('capital_deployed', 0),
-                       "Premium_Raw": p.get('premium', 0)
+                       "Premium_Raw": p.get('premium', 0),
+                       "Open_Interest": p.get('open_interest', 0),
+                       "Volume": p.get('volume', 0),
+                       "GEX_Magnitude": p.get('gex_magnitude', 0)
                   })
              return pillars_scored
 
@@ -282,6 +288,7 @@ class ContractSellingAnalyst:
                  
              gex_raw = s_data.get('gexMillions', 0) * 1e6
              oi_raw = s_data.get('openInterestThousands', 0) * 1e3
+             volume_raw = s_data.get('volume', 0)  # Try to get volume from chain data
              days_to_expiry = chain_data.get("daysToExpiration", 30)
              
              res = self.analyze_strike(
@@ -297,6 +304,9 @@ class ContractSellingAnalyst:
                  maintenance_req=maint_req,
                  ticker=ticker
              )
+             # Update volume if available from chain data
+             if volume_raw > 0:
+                 res["volume"] = volume_raw
              analyzed_results.append(res)
         
         pillars = self.get_actionable_pillars(analyzed_results, engine_mode=engine_mode)

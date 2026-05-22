@@ -61,7 +61,10 @@ class CacheManager:
     def _get_cache_key(self, ticker: str, expiration: Optional[str]) -> str:
         """Standardized key for both memory and disk lookups."""
         exp_hash = expiration if expiration else "nearest"
-        return f"{ticker.upper()}_{exp_hash.replace('-', '')}"
+        # Sanitize expiration date: replace path separators and format consistently
+        # Convert both MM/DD/YYYY and YYYY-MM-DD to a safe format
+        sanitized = exp_hash.replace("/", "-").replace("\\", "-").replace(" ", "-")
+        return f"{ticker.upper()}_{sanitized}"
 
     def _is_expired(self, entry_timestamp: float) -> bool:
         """Determines if a cache entry is expired based on market hours."""
@@ -176,15 +179,39 @@ class CacheManager:
         expirations = []
         for f in files:
             basename = os.path.basename(f)
-            # Format is TICKER_YYYYMMDD.json or TICKER_nearest.json
+            # Format is TICKER_YYYYMMDD.json, TICKER_YYYY-MM-DD.json, or TICKER_nearest.json
             parts = basename.replace(".json", "").split("_")
             if len(parts) < 2: continue
             date_str = parts[1]
             if date_str == "nearest": continue
             
-            # Convert YYYYMMDD to YYYY-MM-DD
-            if len(date_str) == 8:
+            # Normalize date format to YYYY-MM-DD
+            # Handle multiple possible formats:
+            # - YYYYMMDD (8 chars, no separators)
+            # - YYYY-MM-DD (10 chars, dashes)
+            # - MM-DD-YYYY (10 chars, dashes, different order)
+            # - MM/DD/YYYY (converted to MM-DD-YYYY)
+            formatted = None
+            if len(date_str) == 8 and date_str.isdigit():
+                # YYYYMMDD -> YYYY-MM-DD
                 formatted = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+            elif len(date_str) == 10 and date_str[4] == "-":
+                # YYYY-MM-DD -> YYYY-MM-DD (already correct)
+                formatted = date_str
+            elif len(date_str) == 10 and date_str[2] == "-":
+                # MM-DD-YYYY -> YYYY-MM-DD
+                try:
+                    parts_date = date_str.split("-")
+                    formatted = f"{parts_date[2]}-{parts_date[0]}-{parts_date[1]}"
+                except: pass
+            elif "/" in date_str:
+                # MM/DD/YYYY -> YYYY-MM-DD
+                try:
+                    parts_date = date_str.replace("/", "-").split("-")
+                    formatted = f"{parts_date[2]}-{parts_date[0]}-{parts_date[1]}"
+                except: pass
+            
+            if formatted:
                 expirations.append(formatted)
         return sorted(expirations)
 

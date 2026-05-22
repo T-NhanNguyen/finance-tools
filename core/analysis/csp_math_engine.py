@@ -151,9 +151,10 @@ def calculate_option_metrics(
     structural_score = abs(gex_value * oi_value)
     eff_cost_basis = strike - premium
     
-    # CapEff is now based purely on extrinsic yield vs normalized risk floor
-    risk_divisor = max(MIN_MONEYNESS_PCT, safety_margin_float)
-    capital_efficiency_ratio = trade_roi_true / risk_divisor
+    # CapEff is based on extrinsic yield vs collateral (initial margin requirement)
+    # This correctly measures ROI relative to actual capital locked
+    initial_margin_percent = margin_per_share / effective_entry if effective_entry > 0 else 0
+    capital_efficiency_ratio = trade_roi_true / initial_margin_percent if initial_margin_percent > 0 else 0
 
     return {
         "intrinsic_value": intrinsic_value,
@@ -172,6 +173,5 @@ def calculate_option_metrics(
         "efficiency_score": efficiency_score,
         "structural_score": structural_score,
         "eff_cost_basis": eff_cost_basis,
-        "risk_divisor": risk_divisor,
         "capital_efficiency_ratio": capital_efficiency_ratio
     }

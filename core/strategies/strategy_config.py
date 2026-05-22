@@ -20,6 +20,7 @@ LENDERS = [
     100_000,    # Tam
     17_300,     # Mom
     54_700,     # gains and others
+    # 1_000_000,
 ]
 
 # Annual interest rate on all loans (flat rate applied to total principal).
@@ -217,4 +218,14 @@ SCENARIOS = {
             "spreadcost_weight": 0.05
         }
     )
+}
+
+# ===========================================================
+# OPTION LIQUIDITY THRESHOLDS
+# Minimum values required for an option to be considered liquid
+# ===========================================================
+OPTION_LIQUIDITY_THRESHOLDS = {
+    "min_open_interest": 500,           # Minimum OI to consider liquid
+    "min_volume": 200,                  # Minimum daily volume
+    "min_gex_magnitude": 10_000_000,    # $10M minimum GEX clustering
 }

@@ -36,6 +36,11 @@ class Position:
     initial_req: Optional[float] = None
     maint_req: Optional[float] = None
     status: Optional[str] = None # NEW: Stores simulation outcome
+    open_interest: float = 0.0  # Open Interest
+    volume: float = 0.0  # Daily volume
+    gex_magnitude: float = 0.0  # Absolute GEX value
+    capital_efficiency_ratio: float = 0.0  # Capital efficiency ratio for ranking
+    trade_roi_pct: float = 0.0  # Cached ROI for reporting
 
     def __post_init__(self):
         margin_info = MARGIN_REQS.get(self.ticker.upper(), {})
@@ -157,10 +162,103 @@ class PortfolioMarginAllocator:
         """Total cash required to settle all short positions if assigned."""
         return self.total_notional
 
-    def print_summary(self):
-        """Prints a structured view of the shared collateral pool state."""
+    def rank_tickers_by_capital_efficiency(self, positions: List[Position]) -> List[Dict]:
+        """
+        Aggregate positions by ticker and calculate weighted capital efficiency.
+        Includes all candidate positions but ranks tickers by their best strike's efficiency.
+        """
+        ticker_data = {}
+        for p in positions:
+            if p.ticker not in ticker_data:
+                ticker_data[p.ticker] = {
+                    "total_notional": 0.0,
+                    "capital_efficiency_sum": 0.0,
+                    "best_efficiency": 0.0,
+                    "position_count": 0,
+                    "selected_count": 0,
+                    "positions": []
+                }
+            
+            # Use CapEff from position if available
+            capital_eff = getattr(p, 'capital_efficiency_ratio', 0)
+            
+            if p.contracts > 0:
+                ticker_data[p.ticker]["total_notional"] += p.notional
+                ticker_data[p.ticker]["selected_count"] += 1
+            
+            ticker_data[p.ticker]["capital_efficiency_sum"] += capital_eff
+            ticker_data[p.ticker]["best_efficiency"] = max(ticker_data[p.ticker]["best_efficiency"], capital_eff)
+            ticker_data[p.ticker]["position_count"] += 1
+            ticker_data[p.ticker]["positions"].append(p)
+        
+        ranked = []
+        for ticker, data in ticker_data.items():
+            # Rank based on the best available strike for this ticker
+            avg_efficiency = data["capital_efficiency_sum"] / data["position_count"] if data["position_count"] > 0 else 0
+            ranked.append({
+                "ticker": ticker,
+                "total_notional": data["total_notional"],
+                "capital_efficiency": round(data["best_efficiency"], 4), # Rank by best available
+                "avg_efficiency": round(avg_efficiency, 4),
+                "position_count": data["position_count"],
+                "selected_count": data["selected_count"],
+                "positions": sorted(data["positions"], key=lambda x: getattr(x, 'pillar_score', 0), reverse=True)
+            })
+        
+        # Sort tickers by best strike efficiency
+        return sorted(ranked, key=lambda x: x["capital_efficiency"], reverse=True)
+
+    def print_summary(self, ranked_tickers: List[Dict] = None):
+        """Prints diversified allocation view."""
         print(f"\n{'='*82}")
-        print(f"PORTFOLIO MARGIN ALLOCATOR — Shared Collateral Pool")
+        print(f"PORTFOLIO MARGIN ALLOCATOR — Diversified Capital Allocation")
+        print(f"{'='*82}")
+        
+        # Best ticker header
+        if ranked_tickers:
+            best = ranked_tickers[0]
+            print(f"\n⭐ BEST TICKER FOR WEEK: {best['ticker']} (Capital Efficiency: {best['capital_efficiency']*100:.1f}%)")
+            print(f"-"*82)
+        
+        # Ticker breakdown
+        # Show top 5 tickers to avoid wall of text, or all if fewer
+        display_limit = 5
+        for rank, ticker_data in enumerate(ranked_tickers[:display_limit] or [], 1):
+            ticker = ticker_data["ticker"]
+            positions = ticker_data["positions"]
+            
+            print(f"\n{ticker} {'(Top Pick)' if rank == 1 else f'(Rank {rank})'}")
+            print(f"  Total Notional: ${ticker_data['total_notional']:,.2f} | Positions Selected: {ticker_data['selected_count']}")
+            print(f"  Best Capital Efficiency: {ticker_data['capital_efficiency']*100:.1f}%")
+            print(f"  {'':>4}{'Strike':<10}{'Premium':<12}{'Contracts':<10}{'ROI %':<10}{'OI':<12}{'Vol':<12}{'GEX':<15}")
+            print(f"  {'-'*82}")
+            
+            # Show top 3 candidates per ticker
+            for p in positions[:3]:
+                oi = getattr(p, 'open_interest', 0)
+                vol = getattr(p, 'volume', 0)
+                gex = getattr(p, 'gex_magnitude', 0)
+                
+                # Formatting liquidity metrics
+                oi_str = f"{int(oi/1000):.0f}k" if oi >= 1000 else f"{int(oi):.0f}"
+                vol_str = f"{int(vol/1000):.0f}k" if vol >= 1000 else f"{int(vol):.0f}"
+                gex_str = f"${gex/1e6:.1f}M" if gex >= 1e6 else f"${gex/1e3:.0f}k"
+                
+                roi = getattr(p, 'trade_roi_pct', 0)
+                # Mark selected with a star
+                prefix = " ⭐ " if p.contracts > 0 else "    "
+                print(f"{prefix}${p.strike:<9.2f}${p.premium_collected:<11.2f}{p.contracts:<10}{roi:<10.2f}{oi_str:<12}{vol_str:<12}{gex_str:<15}")
+            
+            # Show if there were more options not displayed
+            if len(positions) > 3:
+                print(f"  {'':>4}({len(positions)-3} more candidate strikes analyzed for {ticker})")
+        
+        if len(ranked_tickers) > display_limit:
+            print(f"\n... and {len(ranked_tickers) - display_limit} other tickers scanned but not in top 5 ...")
+        
+        # Portfolio summary
+        print(f"\n{'='*82}")
+        print(f"PORTFOLIO SUMMARY")
         print(f"{'='*82}")
         print(f"  Cash (Lender):         ${self.cash:>14,.2f}")
         print(f"  Accumulated Premiums:  ${self.accumulated_premiums:>14,.2f}")
@@ -189,13 +287,23 @@ class PortfolioMarginAllocator:
         print(f"{'='*82}\n")
 
 
-def optimize_allocation(allocator: PortfolioMarginAllocator, candidates: List[Position]) -> List[Position]:
+# Global optimization parameters
+LIQUIDITY_THRESHOLD = 0.25       # Max 25% of OI/Volume to avoid being an "outlier"
+DIVERSIFIED_EQUITY_CAP = 0.35    # Max 35% of total equity per ticker (only if --diversified is used)
+
+def optimize_allocation(
+    allocator: PortfolioMarginAllocator, 
+    candidates: List[Position], 
+    force_diversified: bool = False
+) -> List[Position]:
     """
     Solves the 2D multidimensional knapsack problem for optimal contract sizing.
     Dimension 1 (initial margin): Sum of formula-based initial margin ≤ total equity (IBKR entry gate).
     Dimension 2 (maint margin):   Sum of formula-based maint margin  ≤ total equity (ongoing holding).
-    Both weights are in absolute dollars from the Reg-T formula, so no outer unique_reqs loop is needed.
     Supports MCK to ensure mutual exclusivity between different strikes for the same ticker.
+    
+    Liquidity Guard: Enforces that we don't exceed 25% of the ticker's liquidity.
+    Diversification: If force_diversified is True, also limits each ticker to 35% of total equity.
     """
     best_premium = -1.0
     best_counts = {i: 0 for i in range(len(candidates))}
@@ -254,9 +362,25 @@ def optimize_allocation(allocator: PortfolioMarginAllocator, candidates: List[Po
 
         # Option 2: Try each strike (at most one per ticker)
         for orig_i, w_i, w_m, v, cap in group_list[group_idx]:
+            p = candidates[orig_i]
             max_take = cap
+            
+            # 1. Liquidity Guard (Always on): 25% of the weekly liquidity (OI/Vol proxy)
+            # Use max(OI, Volume) as the liquidity anchor
+            liquidity = max(getattr(p, 'open_interest', 0), getattr(p, 'volume', 0))
+            if liquidity > 0:
+                liquidity_cap = int(liquidity * LIQUIDITY_THRESHOLD)
+                max_take = min(max_take, liquidity_cap)
+            
+            # 2. Diversification Cap: Only if force_diversified is True
+            if force_diversified and w_i > 0:
+                equity_ticker_limit = int((E0 * DIVERSIFIED_EQUITY_CAP) / w_i)
+                max_take = min(max_take, equity_ticker_limit)
+                
+            # 3. Standard knapsack budget constraints
             if w_i > 0:
                 max_take = min(max_take, int((E0 - used_init)  / w_i))
+                
             if w_m > 0:
                 max_take = min(max_take, int((E0 - used_maint) / w_m))
 
@@ -280,9 +404,15 @@ def optimize_allocation(allocator: PortfolioMarginAllocator, candidates: List[Po
                 price_floor=c.price_floor,
                 strategy_type=c.strategy_type,
                 initial_req=c.initial_req,
-                maint_req=c.maint_req
+                maint_req=c.maint_req,
+                open_interest=getattr(c, 'open_interest', 0),
+                volume=getattr(c, 'volume', 0),
+                gex_magnitude=getattr(c, 'gex_magnitude', 0),
+                capital_efficiency_ratio=getattr(c, 'capital_efficiency_ratio', 0),
+                trade_roi_pct=getattr(c, 'trade_roi_pct', 0)
             )
         )
+
     return optimal_positions
 
 
@@ -294,7 +424,8 @@ def simulate_multi_asset_portfolio(
     tickers: List[str],
     strategy_type: str = "CSP",
     expiration: Optional[str] = None,
-    cash_equity: Optional[float] = None
+    cash_equity: Optional[float] = None,
+    force_diversified: bool = False
 ) -> PortfolioMarginAllocator:
     """
     Core function to analyze multiple tickers and solve for optimal collateral allocation.
@@ -324,6 +455,12 @@ def simulate_multi_asset_portfolio(
         # Feed all candidates from both engines to let the optimizer decide relative safety vs yield
         for eng_key in ["Top_Wheel_Engine", "Top_Cash_Engine"]:
             for p_data in pillars_dict.get(eng_key, []):
+                # Get capital efficiency ratio from pillar data if available
+                cap_eff = p_data.get('Cap_Efficiency', 0.0)
+                # Also try the old name if available
+                if cap_eff == 0.0:
+                    cap_eff = p_data.get('capital_efficiency_ratio', 0.0)
+                
                 candidate_positions.append(
                     Position(
                         ticker=t,
@@ -333,24 +470,45 @@ def simulate_multi_asset_portfolio(
                         pillar_score=p_data.get('Pillar_Score', 1.0),
                         price_floor=p_data.get('Floor_P_call', 0.0),
                         strategy_type=strategy_type.upper(),
-                        maint_req=res.get("maint_req")
+                        maint_req=res.get("maint_req"),
+                        capital_efficiency_ratio=cap_eff,
+                        open_interest=p_data.get('Open_Interest', 0),
+                        volume=p_data.get('Volume', 0),
+                        gex_magnitude=p_data.get('GEX_Magnitude', 0),
+                        trade_roi_pct=float(p_data.get('Trade_ROI', '0').replace('%', ''))
                     )
                 )
 
     # Run Knapsack Solver
-    optimal_allocations = optimize_allocation(portfolio, candidate_positions)
+    optimal_allocations = optimize_allocation(portfolio, candidate_positions, force_diversified=force_diversified)
 
     # Post-process for final portfolio state and status outcomes
     for orig, opt in zip(candidate_positions, optimal_allocations):
         if opt.contracts > 0:
-            opt.status = "FULL DEPLOYMENT" if opt.contracts == orig.contracts else f"SCALED DOWN from {orig.contracts}"
+            opt.status = "SELECTED" if opt.contracts == orig.contracts else "SCALED DOWN"
             portfolio.positions.append(opt)
             portfolio.accumulated_premiums += opt.premium_collected * opt.contracts * 100
+            # Add liquidity metrics from original if available
+            if hasattr(orig, 'open_interest'):
+                opt.open_interest = orig.open_interest
+            if hasattr(orig, 'volume'):
+                opt.volume = orig.volume
+            if hasattr(orig, 'gex_magnitude'):
+                opt.gex_magnitude = orig.gex_magnitude
         else:
             opt.status = "REJECTED"
-            portfolio.positions.append(opt) # Add even if empty so consumer sees the rejection
+            # Copy all metadata for ranking even if rejected
+            opt.open_interest = orig.open_interest
+            opt.volume = orig.volume
+            opt.gex_magnitude = orig.gex_magnitude
+            opt.trade_roi_pct = orig.trade_roi_pct
+            opt.pillar_score = orig.pillar_score
+            portfolio.positions.append(opt)
 
-    return portfolio
+    # Rank tickers by capital efficiency
+    ranked_tickers = portfolio.rank_tickers_by_capital_efficiency(portfolio.positions)
+
+    return portfolio, ranked_tickers
 
 
 # =============================================================================
@@ -362,6 +520,7 @@ if __name__ == "__main__":
     parser.add_argument("tickers", nargs="*", help="List of tickers (e.g., SPMX QQQ AAPL)")
     parser.add_argument("--strategy", type=str.upper, choices=["CSP", "CC"], default="CSP", help="Strategy type: CSP or CC")
     parser.add_argument("--expiration", help="Expiration date (YYYY-MM-DD, partial string, or index)")
+    parser.add_argument("--diversified", action="store_true", help="Force diversification (max 35% equity per ticker)")
     args = parser.parse_args()
 
     tickers = [t.upper() for t in args.tickers] if args.tickers else ["UUUU", "RKLB", "SPXL", "ASTS", "NVDA"]
@@ -371,17 +530,14 @@ if __name__ == "__main__":
     print(f"Strategy: {args.strategy}")
     print(f"\nScanning options chain for {len(tickers)} tickers...")
 
-    portfolio = simulate_multi_asset_portfolio(
+    portfolio, ranked_tickers = simulate_multi_asset_portfolio(
         tickers=tickers, 
         strategy_type=args.strategy, 
         expiration=args.expiration, 
-        cash_equity=cash_equity
+        cash_equity=cash_equity,
+        force_diversified=args.diversified
     )
 
+    # Print diversified allocation
     print("\nOptimal combination calculated successfully:")
-    print("-" * 75)
-    for p in portfolio.positions:
-        if p.contracts > 0:
-            print(f"  {p.ticker:<6} {p.contracts:>4}x ${p.strike:>6.2f} (notional ${p.notional:,.2f}) → {p.status}")
-
-    portfolio.print_summary()
+    portfolio.print_summary(ranked_tickers)
