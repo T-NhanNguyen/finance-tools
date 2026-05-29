@@ -176,6 +176,8 @@ class ContractSellingResponse(BaseModel):
     maint_req: float = Field(description="Maintenance margin lock rate layouts formats setups profiles")
     pillars: ActionablePillars = Field(description="Actionable setups configurations profiles dashboards overlays benchmarks scalar sets layouts")
     all_strikes: List[StrikeAnalysisData] = Field(default_factory=list, description="Analytics dataset metrics mapped response Breakdown analytics")
+    custom_shares: Optional[int] = Field(None, description="User defined existing share position size")
+    custom_cost_basis: Optional[float] = Field(None, description="User defined stock entry cost basis")
 
 
 # ============================================================================
@@ -262,6 +264,8 @@ class ContractSellingRequest(BaseModel):
     engine: Optional[Literal["BOTH", "CASH", "WHEEL"]] = Field("BOTH", description="Engine filter mode (BOTH, CASH, WHEEL)")
     expiration: Optional[str] = Field(None, description="Expiration date (YYYY-MM-DD or index)")
     cash_equity: Optional[float] = Field(None, description="Dynamic capital budget override")
+    custom_cost_basis: Optional[float] = Field(None, description="User defined stock entry cost basis (CC only)")
+    custom_shares: Optional[int] = Field(None, description="User defined existing share position size (CC only)")
 
 
 class PortfolioSimulationRequest(BaseModel):

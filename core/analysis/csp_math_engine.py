@@ -5,6 +5,8 @@ Contains mathematical formulas for calculating options selling strategies metric
 Extracted from contract_selling_analyst.py
 """
 
+from typing import Optional
+
 from core.strategies.strategy_config import (
     FEDERAL_TAX_BRACKET, APPLIES_NIIT,
     LOAN_RATE, MIN_MONEYNESS_PCT,
@@ -79,7 +81,9 @@ def calculate_option_metrics(
     cash_equity: float,
     init_req: float,
     maint_req: float,
-    ticker: str = ""
+    ticker: str = "",
+    custom_cost_basis: Optional[float] = None,
+    custom_shares: Optional[int] = None
 ) -> dict:
     """Calculates detailed breakdown metrics for an option contract."""
 
@@ -96,12 +100,15 @@ def calculate_option_metrics(
     extrinsic_premium = premium - intrinsic_value
 
     # 2. CAPITAL & POSITION CALCULATIONS
-    effective_entry = strike if strategy_type.upper() == "CSP" else underlying_price
+    effective_entry = custom_cost_basis if custom_cost_basis is not None else (strike if strategy_type.upper() == "CSP" else underlying_price)
 
     # Contract count uses the conservative cash_req (includes SAFETY_BUFFER_TARGET).
     # This ensures the scanner always suggests fewer contracts than the Reg-T hard ceiling.
     cash_req = calculate_cash_requirement(effective_entry, init_req, maint_req)
-    contracts = int((cash_equity / cash_req) / 100) if cash_req > 0 else 0
+    if custom_shares is not None:
+        contracts = int(custom_shares // 100)
+    else:
+        contracts = int((cash_equity / cash_req) / 100) if cash_req > 0 else 0
     shares_assigned = contracts * 100
 
     # ROI and carry cost use the Reg-T formula margin as the denominator — the actual
@@ -138,7 +145,10 @@ def calculate_option_metrics(
     # 4. SAFETY & MARGIN CALL FLOOR (Position-Specific)
     # Uses cash_req-based floor for consistency with the safety cushion model.
     margin_call_floor = (effective_entry - cash_req) / (1 - maint_req) if (1 - maint_req) > 0 else 0
-    safety_margin_float = (underlying_price - strike) / underlying_price if underlying_price > 0 else 0
+    if strategy_type.upper() == "CSP":
+        safety_margin_float = (underlying_price - strike) / underlying_price if underlying_price > 0 else 0
+    else:  # CC
+        safety_margin_float = (strike - underlying_price) / underlying_price if underlying_price > 0 else 0
     safety_margin = safety_margin_float * 100
     
     # Strategy Category is determined in get_actionable_pillars
@@ -149,7 +159,10 @@ def calculate_option_metrics(
     efficiency_score = prem_yield / (max(0.001, safety_margin_float) if safety_margin_float > 0 else 0.001)
     
     structural_score = abs(gex_value * oi_value)
-    eff_cost_basis = strike - premium
+    if strategy_type.upper() == "CSP":
+        eff_cost_basis = strike - premium
+    else:  # CC
+        eff_cost_basis = underlying_price - premium
     
     # CapEff is based on extrinsic yield vs collateral (initial margin requirement)
     # This correctly measures ROI relative to actual capital locked

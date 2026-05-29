@@ -194,7 +194,9 @@ async def analyze_contract_selling(request: ContractSellingRequest):
         request.strategy or "CSP", 
         request.engine or "BOTH", 
         request.expiration,
-        request.cash_equity
+        request.cash_equity,
+        request.custom_cost_basis,
+        request.custom_shares
     )
     if "error" in result:
         raise HTTPException(status_code=400, detail=result)

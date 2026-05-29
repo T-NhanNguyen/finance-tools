@@ -243,7 +243,9 @@ def getContractSellingData(
     strategy: str = "CSP", 
     engine: str = "BOTH", 
     expiration: Optional[str] = None,
-    cash_equity: Optional[float] = None
+    cash_equity: Optional[float] = None,
+    custom_cost_basis: Optional[float] = None,
+    custom_shares: Optional[int] = None
 ) -> Dict:
     """
     Fetch Contract Selling analysis and return structured JSON.
@@ -256,14 +258,22 @@ def getContractSellingData(
         # Try cache-first analysis
         chain = get_cached_option_chain(ticker, expiration)
         if chain:
-            result = analyst.scan_from_chain(chain, strategy_type=strategy.upper(), engine_mode=engine.upper())
+            result = analyst.scan_from_chain(
+                chain, 
+                strategy_type=strategy.upper(), 
+                engine_mode=engine.upper(),
+                custom_cost_basis=custom_cost_basis,
+                custom_shares=custom_shares
+            )
         else:
             # Fallback to sync scan (fetch + compute)
             result = analyst.scan(
                 ticker.upper(), 
                 expiration_input=expiration, 
                 strategy_type=strategy.upper(), 
-                engine_mode=engine.upper()
+                engine_mode=engine.upper(),
+                custom_cost_basis=custom_cost_basis,
+                custom_shares=custom_shares
             )
         
         if "error" in result:

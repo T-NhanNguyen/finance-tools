@@ -9,8 +9,10 @@ Contains:
 3. Runner (Scanner): connects pipeline to real-time data
 """
 
+from datetime import datetime, time, timedelta
 from typing import List, Dict, Optional
 import pandas as pd
+import pytz
 
 from core.data.bulk_data_loader import fetch_gex_single
 from core.strategies.strategy_config import (
@@ -70,7 +72,9 @@ class ContractSellingAnalyst:
         strategy_type: str = "CSP",
         initial_req: Optional[float] = None,
         maintenance_req: Optional[float] = None,
-        ticker: str = ""
+        ticker: str = "",
+        custom_cost_basis: Optional[float] = None,
+        custom_shares: Optional[int] = None
     ) -> Dict:
         """
         Function 1: The 'Data Scientist'
@@ -91,7 +95,9 @@ class ContractSellingAnalyst:
             cash_equity=self.cash_equity,
             init_req=init_req,
             maint_req=maint_req,
-            ticker=ticker
+            ticker=ticker,
+            custom_cost_basis=custom_cost_basis,
+            custom_shares=custom_shares
         )
         
         # Unpack commonly used variables for backward compatibility
@@ -250,7 +256,9 @@ class ContractSellingAnalyst:
         self, 
         chain_data: Dict, 
         strategy_type: str = "CSP", 
-        engine_mode: str = "BOTH"
+        engine_mode: str = "BOTH",
+        custom_cost_basis: Optional[float] = None,
+        custom_shares: Optional[int] = None
     ) -> Dict:
         """
         Runs analysis pipeline on a pre-loaded option chain.
@@ -274,6 +282,9 @@ class ContractSellingAnalyst:
         )
         effective_capital = (self.cash_equity / atm_init_margin) * spot_price * 100 if atm_init_margin > 0 else self.total_working_capital
         effective_bp_pct = (atm_init_margin / (spot_price * 100)) * 100
+
+        if custom_shares is not None and custom_cost_basis is None:
+            custom_cost_basis = spot_price
 
         analyzed_results = []
         for s_data in strikes:
@@ -302,7 +313,9 @@ class ContractSellingAnalyst:
                  strategy_type=strategy_type,
                  initial_req=init_req,
                  maintenance_req=maint_req,
-                 ticker=ticker
+                 ticker=ticker,
+                 custom_cost_basis=custom_cost_basis,
+                 custom_shares=custom_shares
              )
              # Update volume if available from chain data
              if volume_raw > 0:
@@ -322,7 +335,9 @@ class ContractSellingAnalyst:
              "maint_req": maint_req,
              "expiration": chain_data.get("expiration"),
              "pillars": pillars,
-             "all_strikes": analyzed_results
+             "all_strikes": analyzed_results,
+             "custom_shares": custom_shares,
+             "custom_cost_basis": custom_cost_basis
         }
 
     def scan(
@@ -331,16 +346,41 @@ class ContractSellingAnalyst:
         expiration_input: Optional[str] = None, 
         strategy_type: str = "CSP", 
         top_n_pillars: int = TOP_N_PILLARS,
-        engine_mode: str = "BOTH"
+        engine_mode: str = "BOTH",
+        custom_cost_basis: Optional[float] = None,
+        custom_shares: Optional[int] = None
     ) -> Dict:
         """
         Runs complete scanner pipeline with synchronous fetch.
         """
+        if expiration_input is None:
+            pacific = pytz.timezone('US/Pacific')
+            now_pacific = datetime.now(pacific)
+            w = now_pacific.weekday()
+            if w < 4:  # Monday to Thursday
+                days_to_add = 4 - w
+            elif w == 4:  # Friday
+                if now_pacific.time() < time(9, 0):
+                    days_to_add = 0
+                else:
+                    days_to_add = 7
+            elif w == 5:  # Saturday
+                days_to_add = 6
+            else:  # Sunday
+                days_to_add = 5
+            expiration_input = (now_pacific + timedelta(days=days_to_add)).strftime("%Y-%m-%d")
+
         data = fetch_gex_single(ticker, expiration_input)
         if "error" in data:
             return data
             
-        return self.scan_from_chain(data, strategy_type=strategy_type, engine_mode=engine_mode)
+        return self.scan_from_chain(
+            data, 
+            strategy_type=strategy_type, 
+            engine_mode=engine_mode,
+            custom_cost_basis=custom_cost_basis,
+            custom_shares=custom_shares
+        )
 
 
 def run_scanner():
@@ -350,6 +390,7 @@ def run_scanner():
     parser.add_argument("--strategy", type=str.upper, choices=["CSP", "CC"], default="CSP", help="Strategy type: CSP or CC")
     parser.add_argument("--engine", type=str.upper, choices=["BOTH", "CASH", "WHEEL"], default="BOTH", help="Engine filter mode")
     parser.add_argument("--expiration", help="Expiration date (YYYY-MM-DD, partial string, or index)")
+    parser.add_argument("--cost-basis,shares", "--cost-basis-shares", dest="cost_basis_shares", help="User defined cost basis and shares format: TICKER,SHARES or TICKER,COST_BASIS,SHARES")
     args = parser.parse_args()
     
     parsed_tickers = []
@@ -361,7 +402,39 @@ def run_scanner():
         else:
             parsed_tickers.append(t)
             
-    tickers = [t.upper() for t in parsed_tickers] if parsed_tickers else ["ASTS", "QQQ", "RKLB", "NBIS"]
+    tickers = [t.upper() for t in parsed_tickers]
+    
+    custom_positions = {}
+    if args.cost_basis_shares:
+        parts = [p.strip() for p in args.cost_basis_shares.split(",")]
+        if len(parts) == 2:
+            try:
+                # If first is numeric, it is COST_BASIS,SHARES
+                val1 = float(parts[0])
+                val2 = int(parts[1])
+                target_ticker = tickers[0] if tickers else "BE"
+                custom_positions[target_ticker.upper()] = {"cost_basis": val1, "shares": val2}
+            except ValueError:
+                ticker_key = parts[0].upper()
+                try:
+                    shares_val = int(parts[1])
+                    custom_positions[ticker_key] = {"cost_basis": None, "shares": shares_val}
+                except ValueError:
+                    pass
+        elif len(parts) == 3:
+            ticker_key = parts[0].upper()
+            try:
+                cb_val = float(parts[1])
+                shares_val = int(parts[2])
+                custom_positions[ticker_key] = {"cost_basis": cb_val, "shares": shares_val}
+            except ValueError:
+                pass
+
+    if not tickers:
+        if custom_positions:
+            tickers = list(custom_positions.keys())
+        else:
+            tickers = ["ASTS", "QQQ", "RKLB", "NBIS"]
     
     cash_equity = sum(LENDERS)
     analyst = ContractSellingAnalyst(cash_equity=cash_equity)
@@ -371,7 +444,17 @@ def run_scanner():
     from concurrent.futures import ThreadPoolExecutor
     def process_ticker(t):
         try:
-             return t, analyst.scan(t.upper(), expiration_input=parsed_expiration, strategy_type=args.strategy, engine_mode=args.engine)
+             pos = custom_positions.get(t.upper(), {})
+             cb = pos.get("cost_basis")
+             sh = pos.get("shares")
+             return t, analyst.scan(
+                 t.upper(), 
+                 expiration_input=parsed_expiration, 
+                 strategy_type=args.strategy, 
+                 engine_mode=args.engine,
+                 custom_cost_basis=cb,
+                 custom_shares=sh
+             )
         except Exception as e:
              return t, {"error": str(e)}
 
@@ -391,7 +474,14 @@ def run_scanner():
              is_cc = res.get("strategy_type", "CSP").upper() == "CC"
              benchmark_label = "Call" if is_cc else "Put"
              print(f"Spot: ${res['spot_price']:.2f} | Benchmark {benchmark_label} Premium: ${res['atm_premium_benchmark']:.2f}")
-             print(f"Effective Capital / BP: ${res['effective_capital']:,.2f} (Reg-T formula margin: {res.get('effective_bp_pct', 0):.1f}% of notional)")
+             
+             sh = res.get("custom_shares")
+             if sh is not None:
+                 eq_val = sh * res['spot_price']
+                 cb_str = f" | Cost Basis: ${res['custom_cost_basis']:.2f}" if res.get("custom_cost_basis") is not None else ""
+                 print(f"Equity Value: ${eq_val:,.2f} | Share Count: {sh}{cb_str}")
+             else:
+                 print(f"Effective Capital / BP: ${res['effective_capital']:,.2f} (Reg-T formula margin: {res.get('effective_bp_pct', 0):.1f}% of notional)")
              print("-" * 70)
              
              for engine, p_list in res["pillars"].items():
