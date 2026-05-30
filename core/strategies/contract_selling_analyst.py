@@ -296,6 +296,11 @@ class ContractSellingAnalyst:
                  premium = (s_data.get('callBid', 0) + s_data.get('callAsk', 0)) / 2
                  
              if premium <= 0: continue
+             
+             # Filter out net-loss strikes for Covered Calls
+             if strategy_type.upper() == "CC" and custom_cost_basis is not None:
+                 if (strike - custom_cost_basis) + premium < 0:
+                     continue
                  
              gex_raw = s_data.get('gexMillions', 0) * 1e6
              oi_raw = s_data.get('openInterestThousands', 0) * 1e3
