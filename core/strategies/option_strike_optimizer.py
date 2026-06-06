@@ -6,10 +6,11 @@ Usage: python -m core.strategies.option_strike_optimizer TICKER --scenario SCENA
 
 import argparse
 import sys
-from datetime import datetime
+from datetime import datetime, date
 from typing import Dict, List, Any
 import numpy as np
 import pandas as pd
+import json
 import heapq
 from tabulate import tabulate
 from scipy.signal import argrelextrema
@@ -29,9 +30,11 @@ sys.path.insert(0, '/app')
 from core.data.get_options_data import getOptionChain, getEarningsContext
 from core.data.bulk_data_loader import fetch_gex_all_expirations, fetch_gex_single
 from core.data.get_gex_data import fetch_gex_structured
+from core.data.get_stock_price import getHistoricalPrices, PricePeriod, PriceInterval
 from core.analysis.calculate_gamma_delta import calculateDelta, calculateGamma, calculateBlackScholesPrice
 from core.analysis.calculate_risk_free_rate import getRiskFreeRate
-from core.strategies.strategy_config import SCENARIOS, ScenarioConfig
+from core.strategies.strategy_config import SCENARIOS, ScenarioConfig, LENDERS
+from core.strategies.contract_selling_analyst import ContractSellingAnalyst
 from core.data.get_technical_indicator import getIndicators, calculateSMA
 
 
@@ -217,9 +220,6 @@ class OptionStrikeOptimizer:
         """Get support/resistance levels for a ticker leveraging clustering and extrema."""
         if ticker in self.support_resistance_cache:
             return self.support_resistance_cache[ticker]
-            
-        from core.data.get_stock_price import getHistoricalPrices, PricePeriod, PriceInterval
-        
         # Get historical data for the last year
         df = getHistoricalPrices(ticker, period=PricePeriod.ONE_YEAR, interval=PriceInterval.ONE_DAY)
         
@@ -859,181 +859,1015 @@ def calculate_metrics_debit_spread(candidate: Dict, spot_price: float,
 
 
 # =============================================================================
-# CLI Scanner
+# Efficiency Comparison (New Design)
+# See EFFICIENCY_COLUMNS.md in this directory for a full column reference.
+# =============================================================================
+
+def compare_efficiency(ticker: str, deadline: str, top_n: int = 5,
+                       target_price: float = None, near_date_cutoff: int = 30,
+                       option_type: str = "call") -> Dict:
+    """
+    Compare ITM near-dated vs OTM further-out option contracts by
+    cost-to-cover (extrinsic premium / expected move) and theta-adjusted ROI.
+
+    Args:
+        ticker: Stock ticker symbol (e.g., 'SPY')
+        deadline: Deadline date in YYYY-MM-DD format (market regime end)
+        top_n: Number of top candidates to display per category
+        target_price: Optional price target. If provided, expected move =
+                      abs(target_price - spot_price). Falls back to
+                      calculate_expected_move() otherwise.
+        near_date_cutoff: DTE threshold separating near-dated from further-out (default 30)
+        option_type: 'call' (bullish) or 'put' (bearish) — defaults to 'call'
+
+    Returns:
+        Dictionary with results, candidates, and warnings
+    """
+    # ── Direction-specific field keys and formulas ──
+    _opt_oi = "callOI" if option_type == "call" else "putOI"
+    _opt_bid = "callBid" if option_type == "call" else "putBid"
+    _opt_ask = "callAsk" if option_type == "call" else "putAsk"
+    _opt_iv = "callIV" if option_type == "call" else "putIV"
+    _intrinsic_fn = (lambda s, k: max(0.0, s - k)) if option_type == "call" else (lambda s, k: max(0.0, k - s))
+    _payoff_fn = (lambda t, k: max(0.0, t - k)) if option_type == "call" else (lambda t, k: max(0.0, k - t))
+    _scenario_direction = "bullish" if option_type == "call" else "bearish"
+    _exp_move_sign = 1 if option_type == "call" else -1
+    today = date.today()
+
+    # Try multiple common date formats
+    deadline_dt = None
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%Y/%m/%d", "%Y%m%d", "%d/%m/%Y",
+                "%m-%d-%Y", "%d-%m-%Y", "%b %d, %Y", "%B %d, %Y"):
+        try:
+            deadline_dt = datetime.strptime(deadline, fmt).date()
+            break
+        except ValueError:
+            continue
+
+    if deadline_dt is None:
+        return {"error": f"Invalid deadline format: '{deadline}'."
+                         f" Accepted formats: YYYY-MM-DD, MM/DD/YYYY, YYYYMMDD, "
+                         f"'Jul 1, 2026', 'July 1, 2026', etc."}
+
+    if deadline_dt <= today:
+        return {"error": f"deadline {deadline} is in the past or today. Please provide a future date."}
+
+    target_dte = (deadline_dt - today).days
+
+    # Fetch option chain data (via GEX cache — avoids redundant yfinance calls)
+    chain_data = fetch_gex_all_expirations(ticker)
+    if "error" in chain_data:
+        return {"error": chain_data["error"]}
+
+    spot_price = chain_data.get('spot_price', 0) or chain_data.get('spotPrice', 0)
+    if not spot_price:
+        return {"error": f"Could not determine spot price for {ticker}"}
+
+    # Determine expected move
+    dollar_expected_move = None
+    if target_price is not None:
+        dollar_expected_move = abs(target_price - spot_price)
+    else:
+        # Fallback: use first available expiration's expected move
+        available = chain_data.get("availableExpirations", [])
+        if available:
+            fallback_exp = available[0]
+            em_result = calculate_expected_move(chain_data, fallback_exp, ScenarioConfig(
+                name="Efficiency", direction=_scenario_direction, time_horizon_days=target_dte,
+                min_open_interest=0, min_delta=0.0, max_delta=1.0,
+                expected_move_type="options",
+                scoring_weights={}))
+            dollar_expected_move = em_result.get("expected_move", 0)
+            if not dollar_expected_move or dollar_expected_move <= 0:
+                # Try volatility-based fallback
+                iv = chain_data.get("impliedVolatility", 0.20)
+                dollar_expected_move = spot_price * iv * np.sqrt(target_dte / 365.0)
+
+    if not dollar_expected_move or dollar_expected_move <= 0:
+        return {"error": "Could not compute expected move. Provide --target-price or check data availability."}
+
+    # Use available expirations from chain_data (avoid redundant yf.Ticker call)
+    available = chain_data.get("availableExpirations", [])
+    if not available:
+        return {"error": f"No option expirations found for {ticker}"}
+
+    # Filter expirations: only those on or after today, before or on deadline
+    valid_expirations = []
+    for exp_date_str in available:
+        try:
+            exp_date = datetime.strptime(exp_date_str, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if exp_date >= today:
+            valid_expirations.append((exp_date_str, (exp_date - today).days))
+
+    if not valid_expirations:
+        return {"error": f"No expirations found on or after {deadline} for {ticker}"}
+
+    # Remove same-day expirations (DTE == 0 — no time value, can't compute Greeks)
+    valid_expirations = [(e, d) for e, d in valid_expirations if d > 0]
+    if not valid_expirations:
+        return {"error": f"No future expirations found (all remaining ones expire today)"}
+
+    # Sort by DTE
+    valid_expirations.sort(key=lambda x: x[1])
+
+    # Fetch chains via cached GEX pipeline to avoid redundant yfinance calls
+    # fetch_gex_single uses cache_manager (disk+memory LRU cache, 15-min TTL during market)
+    expiration_details = []
+    max_oi = 0
+    for exp_date_str, dte in valid_expirations:
+        gex_data = fetch_gex_single(ticker, expiration=exp_date_str)
+        if "error" in gex_data:
+            continue
+
+        strikes = gex_data.get("strikes", [])
+        if not strikes:
+            continue
+
+        # Compute total OI from the GEX data (OI is in thousands in GEX data)
+        total_oi = int(sum(s.get(_opt_oi, 0) for s in strikes) * 1000)
+
+        expiration_details.append({
+            "expiration": exp_date_str,
+            "dte": dte,
+            "total_oi": total_oi,
+            "strikes": strikes,
+            "spotPrice": gex_data.get("spotPrice", spot_price)
+        })
+        if total_oi > max_oi:
+            max_oi = total_oi
+
+    if not expiration_details:
+        return {"error": f"No {option_type} option data found for {ticker}"}
+
+    # OI filter: skip expirations with OI < 25% of max OI
+    oi_threshold = max_oi * 0.25
+    filtered_expirations = [e for e in expiration_details if e["total_oi"] >= oi_threshold]
+
+    if not filtered_expirations:
+        return {
+            "ticker": ticker,
+            "deadline": deadline,
+            "spot_price": spot_price,
+            "expected_move": dollar_expected_move,
+            "warnings": [f"No expirations passed OI filter (>= {oi_threshold:.0f} OI, 25% of max {max_oi}). Try a more liquid ticker."],
+            "candidates": [],
+            "itm_near": [],
+            "otm_far": []
+        }
+
+    # Scan candidates — prefer GEX cache data (no redundant yfinance calls),
+    # but fall back to raw chain for lastPrice when GEX bid/ask are 0 (off-hours)
+    candidates = []
+    for exp_info in filtered_expirations:
+        exp_date_str = exp_info["expiration"]
+        dte = exp_info["dte"]
+        strikes_data = exp_info["strikes"]
+        t = dte / 365.0
+        exp_spot = exp_info.get("spotPrice", spot_price)
+
+        for s in strikes_data:
+            strike = s["strike"]
+
+            # Use GEX cached prices. The cache_manager handles TTL:
+            # - During market hours: 15-min TTL, live bid/ask from yfinance
+            # - After market close: data from last settlement is fresh and has bid/ask
+            # - If never populated: 0 bid/ask → skip gracefully (no wasteful API call)
+            bid = s.get(_opt_bid, 0) or 0
+            ask = s.get(_opt_ask, 0) or 0
+            if bid > 0 and ask > 0:
+                effective_price = ask  # What you'd pay
+                last_price = (bid + ask) / 2
+            elif bid > 0:
+                effective_price = bid
+                last_price = bid
+            elif ask > 0:
+                effective_price = ask
+                last_price = ask
+            else:
+                # Cache has no price data — don't fetch fresh (market closed, nothing new)
+                continue
+
+            # IV from GEX cache
+            raw_iv = s.get(_opt_iv, 0)
+            if raw_iv is None or np.isnan(raw_iv) or raw_iv <= 0.01:
+                iv = 0.20
+            else:
+                iv = raw_iv
+
+            delta = calculateDelta(exp_spot, strike, t, iv, option_type)
+            delta_abs = abs(delta)
+
+            # Classify by delta
+            is_itm = 0.55 <= delta_abs <= 0.80
+            is_otm = 0.15 <= delta_abs <= 0.45
+
+            if not is_itm and not is_otm:
+                continue
+
+            # Determine category
+            if is_itm and dte <= near_date_cutoff:
+                category = "ITM_Near"
+            elif is_otm and dte > near_date_cutoff:
+                category = "OTM_Far"
+            else:
+                # Cross-category: ITM far-dated or OTM near-dated — still include in summary
+                if is_itm:
+                    category = "ITM_Far"
+                else:
+                    category = "OTM_Near"
+
+            # Intrinsic value
+            intrinsic = _intrinsic_fn(spot_price, strike)
+            extrinsic = effective_price - intrinsic
+
+            # Cost-to-Cover = extrinsic premium / dollar expected move
+            cost_to_cover = extrinsic / dollar_expected_move if dollar_expected_move > 0 else float('inf')
+
+            # Theta not available from yfinance — compute estimate using Black-Scholes
+            theta_abs = 0.0
+            if iv > 0.01:
+                try:
+                    bs_price = calculateBlackScholesPrice(spot_price, strike, t, iv, option_type)
+                    # Approximate theta using finite difference: shift T by 1 day
+                    t_minus_1 = max((dte - 1) / 365.0, 1/365.0)
+                    bs_price_tomorrow = calculateBlackScholesPrice(spot_price, strike, t_minus_1, iv, option_type)
+                    theta_abs = abs(bs_price_tomorrow - bs_price)
+                except Exception:
+                    theta_abs = effective_price * 0.01  # Rough estimate: 1% of price as daily theta
+            else:
+                # Crude theta estimate: deep ITM options decay slower, OTM decay faster
+                moneyness = abs(strike - spot_price) / spot_price
+                theta_abs = effective_price * 0.01 * (1 + moneyness * 2) if moneyness > 0 else effective_price * 0.005
+
+            # Expected P&L at target
+            computed_price = target_price if target_price is not None else (spot_price + dollar_expected_move * _exp_move_sign)
+            payoff_at_target = _payoff_fn(computed_price, strike)
+            expected_pnl = payoff_at_target - effective_price
+
+            # Theta ROI = expected P&L / (theta burn over target holding period)
+            theta_roi = None
+            if theta_abs > 0 and target_dte > 0:
+                theta_burn = theta_abs * target_dte  # Total theta decay over target holding period
+                if theta_burn > 0:
+                    theta_roi = expected_pnl / theta_burn
+
+            candidate = {
+                "strike": strike,
+                "expiration": exp_date_str,
+                "dte": dte,
+                "delta": round(delta, 4),
+                "bid": bid,
+                "ask": ask,
+                "last_price": last_price,
+                "effective_price": round(effective_price, 2),
+                "intrinsic": round(intrinsic, 2),
+                "extrinsic": round(extrinsic, 2),
+                "cost_to_cover": round(cost_to_cover, 4) if cost_to_cover != float('inf') else None,
+                "theta_abs": round(theta_abs, 4),
+                "theta_roi": round(theta_roi, 4) if theta_roi is not None else None,
+                "expected_pnl": round(expected_pnl, 2),
+                "payoff_at_target": round(payoff_at_target, 2),
+                "category": category,
+                "oi": int(s.get(_opt_oi, 0) * 1000),
+                "volume": int(s.get("volume", 0)),
+                "iv": round(iv, 4),
+                "combined_score": 0.0,  # will be set after normalization
+                "option_type": option_type
+            }
+            candidates.append(candidate)
+
+    if not candidates:
+        return {
+            "ticker": ticker,
+            "deadline": deadline,
+            "spot_price": spot_price,
+            "expected_move": dollar_expected_move,
+            "warnings": [f"No candidates found matching delta ranges (ITM: 0.55-0.80, OTM: 0.15-0.45) for {ticker}"],
+            "candidates": [],
+            "itm_near": [],
+            "otm_far": []
+        }
+
+    # Normalize and compute combined score
+    cost_values = [c["cost_to_cover"] for c in candidates if c["cost_to_cover"] is not None]
+    theta_values = [c["theta_roi"] for c in candidates if c["theta_roi"] is not None]
+
+    cost_min = min(cost_values) if cost_values else 0
+    cost_max = max(cost_values) if cost_values else 1
+    cost_range = cost_max - cost_min if cost_max != cost_min else 1
+
+    theta_min = min(theta_values) if theta_values else 0
+    theta_max = max(theta_values) if theta_values else 1
+    theta_range = theta_max - theta_min if theta_max != theta_min else 1
+
+    for c in candidates:
+        # Cost score: lower cost_to_cover is better (invert and normalize 0-1)
+        cost_score = 1.0 - ((c["cost_to_cover"] - cost_min) / cost_range) if c["cost_to_cover"] is not None else 0.0
+        # Theta ROI score: higher is better (normalize 0-1)
+        theta_score = ((c["theta_roi"] - theta_min) / theta_range) if c["theta_roi"] is not None else 0.0
+        # Safety: clamp scores to valid range
+        cost_score = max(0.0, min(1.0, cost_score))
+        theta_score = max(0.0, min(1.0, theta_score))
+        # Combined: equal weight
+        c["combined_score"] = round(0.5 * cost_score + 0.5 * theta_score, 4)
+
+    # Sort by combined score descending
+    candidates.sort(key=lambda x: x["combined_score"], reverse=True)
+
+    # Add rank
+    for i, c in enumerate(candidates, 1):
+        c["rank"] = i
+
+    # Group by category for the two main groups
+    itm_near = [c for c in candidates if c["category"] == "ITM_Near"][:top_n]
+    otm_far = [c for c in candidates if c["category"] == "OTM_Far"][:top_n]
+
+    # Warnings
+    warnings = []
+    is_bearish = option_type == "put"
+    if target_price is not None and (
+        (not is_bearish and target_price <= spot_price) or
+        (is_bearish and target_price >= spot_price)
+    ):
+        direction_label = "bullish" if not is_bearish else "bearish"
+        warnings.append(f"target_price (${target_price:.2f}) is {'below' if not is_bearish else 'above'} spot (${spot_price:.2f}). Expected move is against {direction_label} direction.")
+    if not itm_near:
+        warnings.append(f"No ITM near-dated candidates found (delta 0.55-0.80, DTE <= {near_date_cutoff}).")
+    if not otm_far:
+        warnings.append(f"No OTM further-out candidates found (delta 0.15-0.45, DTE > {near_date_cutoff}).")
+    if len(candidates) < top_n:
+        warnings.append(f"Only {len(candidates)} candidates found (requested top {top_n}).")
+    if len(candidates) == 0:
+        warnings.append("No candidates matching criteria were found.")
+
+    return {
+        "ticker": ticker,
+        "deadline": deadline,
+        "option_type": option_type,
+        "target_dte": target_dte,
+        "spot_price": spot_price,
+        "expected_move": round(dollar_expected_move, 2),
+        "expected_move_pct": round(dollar_expected_move / spot_price * 100, 2),
+        "near_date_cutoff": near_date_cutoff,
+        "oi_threshold": oi_threshold,
+        "max_oi": max_oi,
+        "expirations_scanned": len(expiration_details),
+        "expirations_passed_oi_filter": len(filtered_expirations),
+        "total_candidates": len(candidates),
+        "candidates": candidates[:top_n],
+        "itm_near": itm_near,
+        "otm_far": otm_far,
+        "warnings": warnings
+    }
+
+
+def _format_efficiency_json(result: Dict) -> str:
+    """Build a compact JSON block for the efficiency comparison — candidates only, no group tables."""
+    out = {
+        "ticker": result.get("ticker", ""),
+        "option_type": result.get("option_type", "call"),
+        "deadline": result.get("deadline", ""),
+        "target_dte": result.get("target_dte", 0),
+        "spot_price": result.get("spot_price", 0),
+        "expected_move": result.get("expected_move", 0),
+        "expected_move_pct": round(result.get("expected_move", 0) / max(result.get("spot_price", 1), 0.01) * 100, 2),
+        "near_date_cutoff": result.get("near_date_cutoff", 30),
+        "expirations_scanned": result.get("expirations_scanned", 0),
+        "expirations_passed_oi_filter": result.get("expirations_passed_oi_filter", 0),
+        "warnings": result.get("warnings", []),
+        "candidates": result.get("candidates", [])
+    }
+    return json.dumps(out, separators=(",", ":"))
+
+
+def _format_diagonal_json(diagonal_plans: List[Dict], ticker: str = "", option_type: str = "call") -> str:
+    """Build a compact JSON block for diagonal spread plans — no Ranked Summary."""
+    out = {
+        "ticker": ticker,
+        "option_type": option_type,
+        "plans": diagonal_plans
+    }
+    return json.dumps(out, separators=(",", ":"))
+
+
+def format_efficiency_results(result: Dict) -> str:
+    """Format efficiency comparison results into readable tables."""
+    from tabulate import tabulate
+
+    lines = []
+
+    ticker = result.get("ticker", "")
+    spot = result.get("spot_price", 0)
+    exp_move = result.get("expected_move", 0)
+    exp_move_pct = result.get("expected_move_pct", 0)
+    target_date = result.get("deadline", "")
+    target_dte = result.get("target_dte", 0)
+    boundary = result.get("near_date_cutoff", 30)
+
+    lines.append(f"\n{'='*75}")
+    option_label = result.get("option_type", "call").capitalize()
+    lines.append(f"  {ticker.upper()} — Efficiency Comparison ({option_label})")
+    lines.append(f"{'='*75}")
+    lines.append(f"  Target Deadline: {target_date} (in ~{target_dte} days)")
+    lines.append(f"  Spot: ${spot:.2f}  |  Expected Move: ${exp_move:.2f} ({exp_move_pct:.1f}%)")
+    lines.append(f"  DTE Boundary: {boundary}d  |  Expirations: {result.get('expirations_passed_oi_filter', 0)} (of {result.get('expirations_scanned', 0)} passed OI filter)")
+    lines.append(f"{'='*75}")
+
+    # Warnings
+    warnings = result.get("warnings", [])
+    if warnings:
+        lines.append(f"\n  ⚠  Warnings:")
+        for w in warnings:
+            lines.append(f"     • {w}")
+
+    candidates = result.get("candidates", [])
+    if not candidates:
+        lines.append("\n  No candidates found.")
+        return "\n".join(lines)
+
+    # Ranked summary table with Category column
+    lines.append(f"\n  ── Ranked Summary (Top {len(candidates)}) ──")
+    summary_headers = ["Rank", "Category", "Expiry", "DTE", "Strike", "Price", "Intr", "Extr",
+                       "Cost/Cov", "ThetaROI", "ExpPnL", "Delta", "Score"]
+    summary_rows = []
+    for c in candidates:
+        cat_display = c["category"]
+        if cat_display == "ITM_Near":
+            cat_display = "I↑"
+        elif cat_display == "ITM_Far":
+            cat_display = "I↑↑"
+        elif cat_display == "OTM_Far":
+            cat_display = "O↓"
+        elif cat_display == "OTM_Near":
+            cat_display = "O↓↓"
+
+        summary_rows.append([
+            c["rank"],
+            cat_display,
+            c["expiration"][-5:],  # MM-DD
+            c["dte"],
+            f"${c['strike']:.0f}",
+            f"${c['effective_price']:.2f}",
+            f"${c['intrinsic']:.2f}",
+            f"${c['extrinsic']:.2f}",
+            f"{c['cost_to_cover']:.2f}x" if c['cost_to_cover'] is not None else "N/A",
+            f"{c['theta_roi']:.2f}x" if c['theta_roi'] is not None else "N/A",
+            f"${c['expected_pnl']:.2f}",
+            f"{c['delta']:.3f}",
+            f"{c['combined_score']:.4f}"
+        ])
+
+    lines.append(tabulate(summary_rows, headers=summary_headers, tablefmt="simple",
+                          colalign=("right", "center", "center", "right", "right",
+                                    "right", "right", "right", "right", "right",
+                                    "right", "right", "right")))
+
+    # ITM Near-Dated group table
+    itm_near = result.get("itm_near", [])
+    if itm_near:
+        lines.append(f"\n  ── ITM Near-Dated (DTE ≤ {boundary}, Delta 0.55—0.80) ──")
+        itm_headers = ["Rank", "Expiry", "DTE", "Strike", "Price", "Intrinsic",
+                       "Extrinsic", "Cost/Cov", "ThetaROI", "ExpPnL", "Score"]
+        itm_rows = []
+        for c in itm_near:
+            itm_rows.append([
+                c["rank"], c["expiration"][-5:], c["dte"],
+                f"${c['strike']:.0f}", f"${c['effective_price']:.2f}",
+                f"${c['intrinsic']:.2f}", f"${c['extrinsic']:.2f}",
+                f"{c['cost_to_cover']:.2f}x" if c['cost_to_cover'] is not None else "N/A",
+                f"{c['theta_roi']:.2f}x" if c['theta_roi'] is not None else "N/A",
+                f"${c['expected_pnl']:.2f}", f"{c['combined_score']:.4f}"
+            ])
+        lines.append(tabulate(itm_rows, headers=itm_headers, tablefmt="simple"))
+    else:
+        lines.append(f"\n  (No ITM near-dated candidates)")
+
+    # OTM Further-Out group table
+    otm_far = result.get("otm_far", [])
+    if otm_far:
+        lines.append(f"\n  ── OTM Further-Out (DTE > {boundary}, Delta 0.15—0.45) ──")
+        otm_headers = ["Rank", "Expiry", "DTE", "Strike", "Price", "Intrinsic",
+                       "Extrinsic", "Cost/Cov", "ThetaROI", "ExpPnL", "Score"]
+        otm_rows = []
+        for c in otm_far:
+            otm_rows.append([
+                c["rank"], c["expiration"][-5:], c["dte"],
+                f"${c['strike']:.0f}", f"${c['effective_price']:.2f}",
+                f"${c['intrinsic']:.2f}", f"${c['extrinsic']:.2f}",
+                f"{c['cost_to_cover']:.2f}x" if c['cost_to_cover'] is not None else "N/A",
+                f"{c['theta_roi']:.2f}x" if c['theta_roi'] is not None else "N/A",
+                f"${c['expected_pnl']:.2f}", f"{c['combined_score']:.4f}"
+            ])
+        lines.append(tabulate(otm_rows, headers=otm_headers, tablefmt="simple"))
+    else:
+        lines.append(f"\n  (No OTM further-out candidates)")
+
+    return "\n".join(lines)
+
+
+# =============================================================================
+# Diagonal Spread Planner
+# =============================================================================
+
+def _is_friday(date_obj) -> bool:
+    """Check if a date is a Friday (weekday 4)."""
+    return date_obj.weekday() == 4
+
+
+def _get_next_fridays(expiration_dates: List[str], cutoff_dte: int) -> List[tuple]:
+    """
+    From a list of available expiration dates, extract those that are
+    Fridays and fall within valid DTE range (<= cutoff_dte from today).
+    Returns list of (expiration_str, dte) sorted by DTE ascending.
+    """
+    today = date.today()
+    results = []
+    for exp_str in expiration_dates:
+        try:
+            exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        dte = (exp_date - today).days
+        if dte <= 0 or dte > cutoff_dte:
+            continue
+        if _is_friday(exp_date):
+            results.append((exp_str, dte))
+    results.sort(key=lambda x: x[1])
+    return results
+
+
+def _skip_current_week(friday_exp: str, friday_dte: int) -> bool:
+    """
+    Determine if the current week's Friday should be skipped.
+    Skip if today is Thursday+ AND the Friday has ≤2 DTE.
+    """
+    today = date.today()
+    # Thursday = weekday 3, Friday = 4, Saturday = 5, Sunday = 6
+    if today.weekday() >= 3 and friday_dte <= 2:
+        return True
+    return False
+
+
+def _find_top_short_legs(
+    ticker: str,
+    weekly_gex_data: Dict,
+    long_strike: float,
+    spot_price: float,
+    option_type: str = "call",
+    cash_equity: float = 100000.0,
+    top_n: int = 5
+) -> List[Dict]:
+    """
+    Use ContractSellingAnalyst to find the top-N OTM short
+    strikes for a diagonal spread, ranked by highest premium.
+
+    For calls (CC strategy): OTM strikes above both long_strike and spot_price.
+    For puts (CSP strategy): OTM strikes below both long_strike and spot_price.
+
+    Returns list of dicts with short leg metrics, sorted by premium descending.
+    Each dict contains: strike, Premium_Raw, Trade_ROI, Post_Tax_ROI,
+    Cap_Efficiency, Break_Even, Contracts, Total_Premium
+    Returns empty list if no suitable strikes found.
+    """
+    is_call = option_type == "call"
+    strategy_type = "CC" if is_call else "CSP"
+
+    analyst = ContractSellingAnalyst(cash_equity=cash_equity)
+    result = analyst.scan_from_chain(
+        weekly_gex_data,
+        strategy_type=strategy_type,
+        engine_mode="BOTH"
+    )
+
+    if "error" in result:
+        return []
+
+    # Collect all analyzed strikes that are OTM relative to both long_strike and spot_price
+    candidates = result.get("all_strikes", [])
+    valid = [
+        c for c in candidates
+        if (
+            (is_call and c.get("strike", 0) > max(long_strike, spot_price))
+            or (not is_call and c.get("strike", 0) < min(long_strike, spot_price))
+        )
+        and c.get("premium", 0) > 0
+    ]
+    if not valid:
+        return []
+
+    # Sort by raw premium descending and take top N
+    valid.sort(key=lambda c: c.get("premium", 0), reverse=True)
+    top = valid[:top_n]
+
+    spot = weekly_gex_data.get("spotPrice", 0)
+    results = []
+    for c in top:
+        prem = c.get("premium", 0)
+        contracts = c.get("contracts", 0)
+        if is_call:
+            break_even = spot - prem
+        else:
+            break_even = c["strike"] - prem
+        results.append({
+            "strike": c["strike"],
+            "Premium_Raw": prem,
+            "Trade_ROI": c.get("trade_roi_pct", 0),
+            "Post_Tax_ROI": c.get("trade_roi_post_tax_pct", 0),
+            "Cap_Efficiency": c.get("capital_efficiency_ratio", 0),
+            "Contracts": contracts,
+            "Total_Premium": prem * 100 * contracts,
+            "Break_Even": break_even
+        })
+
+    return results
+
+
+def plan_diagonal_spreads(efficiency_result: Dict, top_n: int = 5, min_oi_pct: float = 0.0,
+                            option_type: str = "call") -> List[Dict]:
+    """
+    From the efficiency comparison results, build diagonal spread plans
+    for the top-N candidates.
+
+    For each long leg candidate:
+    1. Find weekly Friday expirations until the long leg's DTE
+    2. Apply the Wednesday/2DTE rule
+    3. For each active week, find the OTM short strike relative to the long strike
+    4. Project rolling premiums (80% retention, 10% weekly decay)
+    
+    Supports both calls (bullish diagonal) and puts (bearish diagonal).
+    """
+    is_call = option_type == "call"
+    _oi_field = "callOI" if is_call else "putOI"
+    _bid_field = "callBid" if is_call else "putBid"
+    ticker = efficiency_result.get("ticker", "")
+    if not ticker:
+        return []
+
+    target_dte = efficiency_result.get("target_dte", 0)
+
+    # Get the full expiration list from chain_data
+    chain_data = fetch_gex_all_expirations(ticker)
+    all_expirations = chain_data.get("availableExpirations", [])
+    if not all_expirations:
+        return []
+
+    # Gather candidates: efficiency top-N + ITM_Near + ITM contracts from all expirations
+    seen_keys = set()
+    candidates = []
+    for c in efficiency_result.get("candidates", []):
+        key = (c["strike"], c["expiration"])
+        if key not in seen_keys:
+            seen_keys.add(key)
+            candidates.append(c)
+    for c in efficiency_result.get("itm_near", []):
+        key = (c["strike"], c["expiration"])
+        if key not in seen_keys:
+            seen_keys.add(key)
+            candidates.append(c)
+
+    # Also scan all available expirations for ITM contracts not yet in the pool
+    # This catches longer-dated expirations that pass the OI filter but
+    # were excluded by the efficiency DTE boundary.
+    spot = chain_data.get('spot_price', 0) or chain_data.get('spotPrice', 0)
+    bulk_added = 0
+    for exp_str in all_expirations:
+        if any(c["expiration"] == exp_str for c in candidates):
+            continue  # already covered by efficiency results
+        gex = fetch_gex_single(ticker, expiration=exp_str)
+        if "error" in gex:
+            continue
+        exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()
+        dte = (exp_date - date.today()).days
+        if dte <= 7:
+            continue  # skip same-week, no room for rolls
+        # Collect all valid ITM strikes for this expiration
+        bulk_candidates = []
+        for s in gex.get("strikes", []):
+            strike = s["strike"]
+            # ITM condition is direction-dependent:
+            # Calls: ITM = strike < spot (right to buy below market)
+            # Puts:  ITM = strike > spot (right to sell above market)
+            itm_condition = (strike < spot and is_call) or (strike > spot and not is_call)
+            # Also exclude deep ITM (>50% away from spot) and extreme strikes
+            too_far = (strike < spot * 0.5) or (strike > spot * 2.0)
+            if not itm_condition or too_far:
+                continue
+            bid = s.get(_bid_field, 0) or 0
+            if bid <= 0:
+                continue
+            key = (strike, exp_str)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            bulk_candidates.append({
+                "strike": strike,
+                "expiration": exp_str,
+                "dte": dte,
+                "effective_price": bid,
+                "distance": abs(strike - spot),
+                "category": "ITM_Bulk",
+                "combined_score": 0.5
+            })
+        # Sort by distance to spot (closest to ATM = best leverage), take top 5
+        bulk_candidates.sort(key=lambda x: x["distance"])
+        for bc in bulk_candidates[:5]:
+            del bc["distance"]
+            candidates.append(bc)
+            bulk_added += 1
+
+    # Keep top_n long leg candidates total (efficiency-ranked + bulk ITM)
+    efficient = [c for c in candidates if c.get("category") != "ITM_Bulk"][:top_n]
+    bulk = [c for c in candidates if c.get("category") == "ITM_Bulk"]
+    candidates = efficient + bulk
+    if not candidates:
+        return []
+
+    warnings = []
+
+    # Build plans. If no DTE ≥ 21 candidates produce plans, retry with DTE ≥ 14.
+    def _build_plans(min_dte):
+        results = []
+        for long_candidate in candidates:
+            if len(results) >= top_n:
+                break
+            long_strike = long_candidate["strike"]
+            long_exp = long_candidate["expiration"]
+            long_dte = long_candidate["dte"]
+            if long_dte < min_dte:
+                continue
+            long_cost = long_candidate.get("effective_price", 0)
+
+            # Optional OI filter: prune candidates with low relative OI
+            if min_oi_pct > 0:
+                gex_oi = fetch_gex_single(ticker, expiration=long_candidate["expiration"])
+                if "error" not in gex_oi:
+                    all_strikes = gex_oi.get("strikes", [])
+                    option_oi = [int(s.get(_oi_field, 0) * 1000) for s in all_strikes if s.get(_oi_field, 0) > 0]
+                    strike_oi = int(sum(s.get(_oi_field, 0) for s in all_strikes if s["strike"] == long_strike) * 1000)
+                    max_oi_strike = max(option_oi) if option_oi else 0
+                    if max_oi_strike > 0 and strike_oi < max_oi_strike * (min_oi_pct / 100.0):
+                        continue
+
+            category = long_candidate.get("category", "")
+            score = long_candidate.get("combined_score", 0)
+
+            fridays = _get_next_fridays(all_expirations, long_dte)
+            if not fridays:
+                continue
+
+            active_weeks = []
+            for exp_str, dte in fridays:
+                if not active_weeks and _skip_current_week(exp_str, dte):
+                    continue
+                active_weeks.append((exp_str, dte))
+
+            if not active_weeks:
+                continue
+
+            cash_equity = sum(LENDERS) if LENDERS else 100_000
+            short_legs = []
+            # Only process the first weekly expiration — future weeks are handled
+            # by running ContractSellingAnalyst separately after this week resolves.
+            exp_str, dte = active_weeks[0]
+            exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()
+            gex_data = fetch_gex_single(ticker, expiration=exp_str)
+            if "error" not in gex_data and gex_data.get("strikes"):
+                strikes = gex_data["strikes"]
+                weekly_spot = gex_data.get("spotPrice", 0)
+                top_short_legs = _find_top_short_legs(
+                    ticker, gex_data, long_strike, weekly_spot, option_type=option_type,
+                    cash_equity=cash_equity, top_n=5
+                )
+                for sl_entry in top_short_legs:
+                    short_strike = sl_entry["strike"]
+                    # Spread check: short must be OTM relative to long
+                    spread_is_valid = (short_strike > long_strike) if is_call else (long_strike > short_strike)
+                    spread_width = (short_strike - long_strike) if is_call else (long_strike - short_strike)
+                    min_spread = max(5.0, long_strike * 0.02)
+                    if not spread_is_valid or spread_width < min_spread:
+                        continue
+                    gross_premium = sl_entry["Premium_Raw"]
+                    buyback_cost = gross_premium * 0.2
+                    net_credit = gross_premium - buyback_cost
+                    long_close_value = max(0, weekly_spot - long_strike) if is_call else max(0, long_strike - weekly_spot)
+                    long_value_at_strike = max(0, short_strike - long_strike) if is_call else max(0, long_strike - short_strike)
+                    combined_close = long_close_value + net_credit
+                    short_legs.append({
+                        "short_expiry": exp_str,
+                        "short_strike": short_strike,
+                        "gross_premium": round(gross_premium, 2),
+                        "buyback_cost": round(buyback_cost, 2),
+                        "net_credit": round(net_credit, 2),
+                        "long_close_value": round(long_close_value, 2),
+                        "long_value_at_strike": round(long_value_at_strike, 2),
+                        "combined_close": round(combined_close, 2),
+                        "break_even": round(sl_entry["Break_Even"], 2),
+                        "contracts": sl_entry["Contracts"]
+                    })
+
+            if not short_legs:
+                continue
+
+            # short_legs are independent alternatives (pick one), not sequential rolls
+            for sl in short_legs:
+                sl["cumulative_gross_premium"] = sl["gross_premium"]
+
+            top_net_credit = short_legs[0]["net_credit"]
+
+            results.append({
+                "long_strike": long_strike,
+                "long_expiry": long_exp,
+                "long_dte": long_dte,
+                "long_cost": long_cost,
+                "category": category,
+                "score": score,
+                "target_dte": target_dte,
+                "total_net_credit": top_net_credit,
+                "short_legs": short_legs,
+                "num_rolls": len(short_legs),
+                "option_type": option_type
+            })
+        return results
+
+    diagonal_plans = _build_plans(21)
+    if not diagonal_plans:
+        diagonal_plans = _build_plans(14)
+        if diagonal_plans:
+            print("  ⚠  Illiquid warning: no long legs with 3+ weeks DTE. Using shorter expirations.")
+
+    return diagonal_plans
+
+
+def format_diagonal_results(diagonal_plans: List[Dict]) -> str:
+    """Format diagonal spread plans into readable tables."""
+    from tabulate import tabulate
+
+    lines = []
+
+    lines.append(f"\n{'='*75}")
+    lines.append(f"  Diagonal Spread Plans")
+    lines.append(f"{'='*75}")
+
+    for plan in diagonal_plans:
+        lines.append(f"")
+        option_label = plan.get("option_type", "call").capitalize()
+        lines.append(f"Long: ${plan['long_strike']:.0f} {option_label} exp {plan['long_expiry']} (DTE {plan['long_dte']}) "
+                     f"| Cost: ${plan['long_cost']:.2f} "
+                     f"| Cat: {plan['category']} | Score: {plan['score']:.4f}")
+        # lines.append(f"  {'─'*60}")
+
+        pa_headers = ["Rank", "Short Exp", "Short Strike",
+                      "Short Prem", "−20% Buybk", "= Net Kept",
+                      "+ Long Value", "Close (Max, Stop)",
+                      "Break-Even", "ROI (Max, Stop)"]
+        pa_rows = []
+        long_cost = plan.get("long_cost", 0)
+        for rank_i, sl in enumerate(plan["short_legs"], 1):
+            effective_cost = max(0.01, long_cost - sl['cumulative_gross_premium'])
+            total_value_max = sl['combined_close']
+            stop_close_value = sl['long_value_at_strike'] + sl['net_credit']
+            roi_max = (sl['net_credit'] / effective_cost) * 100
+            roi_stop = ((stop_close_value - long_cost) / effective_cost) * 100 if long_cost > 0 else 0
+            pa_rows.append([
+                rank_i,
+                sl["short_expiry"][-5:],
+                f"${sl['short_strike']:.0f}",
+                f"${sl['gross_premium']:.2f}",
+                f"−${sl['buyback_cost']:.2f}",
+                f"${sl['net_credit']:.2f}",
+                f"${sl['long_close_value']:.2f}",
+                f"(${sl['combined_close']:.2f}, ${stop_close_value:.2f})",
+                f"${sl['break_even']:.2f}",
+                f"({roi_max:.1f}%, {roi_stop:.1f}%)"
+            ])
+        lines.append(tabulate(pa_rows, headers=pa_headers, tablefmt="simple",
+                              colalign=("right", "center", "right",
+                                        "right", "right", "right", "right",
+                                        "right", "center", "center")))
+
+    return "\n".join(lines)
+
+
+# =============================================================================
+# CLI Scanner (Old — commented out for reference / New Efficiency Scanner active)
 # =============================================================================
 
 def run_optimizer_scanner():
-    """CLI scanner for the option strike optimizer."""
-    import argparse
-    
+    """CLI scanner for the option efficiency comparison (new design)."""
+
     parser = argparse.ArgumentParser(
-        prog="option_strikes",
-        description="Find optimal option trades using Black-Scholes, GEX, and market structure.",
+        prog="option_efficiency",
+        description="Efficiency comparison and diagonal spread planner for call/put options.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""Scenarios: bullish_3month (90d), earnings (14d), ta_breakout (var)"""
+        epilog="""Examples:
+  python -m core.strategies.option_strike_optimizer --ticker SPY --deadline-date 2026-06-15 --top-n 10
+  python -m core.strategies.option_strike_optimizer --ticker SPY --deadline-date 2026-06-15 --target-price 560 --mode diagonal --top-n 5
+  python -m core.strategies.option_strike_optimizer --ticker SPY --deadline-date 2026-06-15 --target-price 450 --mode diagonal --option-type put --top-n 5
+  python -m core.strategies.option_strike_optimizer --ticker QQQ --deadline-date 2026-07-01 --near-date-cutoff 45"""
     )
-    
+
     parser.add_argument(
-        "tickers",
-        nargs="*",
-        help="List of ticker symbols to analyze (e.g., SPY QQQ MSFT)"
-    )
-    parser.add_argument(
-        "--scenario",
+        "--mode",
         type=str,
-        default="bullish_3month",
-        choices=list(SCENARIOS.keys()),
-        help="Trading scenario (default: bullish_3month)"
+        default="efficiency",
+        choices=["efficiency", "diagonal"],
+        help="Mode: 'efficiency' (default, compare cost-to-cover/theta-ROI) or 'diagonal' (build diagonal spreads from top candidates)"
+    )
+
+    parser.add_argument(
+        "--ticker",
+        type=str,
+        required=True,
+        help="Single ticker symbol to analyze (e.g., SPY)"
     )
     parser.add_argument(
-        "--strike-type",
+        "--deadline-date",
         type=str,
-        default="single_leg",
-        choices=["single_leg", "debit_spread"],
-        help="Strike type: single_leg (single option) or debit_spread (two-leg spread)"
+        required=True,
+        help="Deadline date. Accepted: YYYY-MM-DD, MM/DD/YYYY, YYYYMMDD, 'Jul 1, 2026', 'July 1, 2026', etc."
+    )
+    parser.add_argument(
+        "--top-n",
+        type=int,
+        default=5,
+        help="Number of top candidates to display per category (default: 5)"
+    )
+    parser.add_argument(
+        "--target-price",
+        type=float,
+        default=None,
+        help="Optional price target. Script computes expected move = abs(target - spot). "
+             "If omitted, falls back to calculate_expected_move()."
+    )
+    parser.add_argument(
+        "--near-date-cutoff",
+        type=int,
+        default=30,
+        help="DTE threshold separating near-dated from further-out (default: 30)"
     )
     parser.add_argument(
         "--option-type",
         type=str,
         default="call",
         choices=["call", "put"],
-        help="Option type for single leg trades (default: call)"
+        help="Option type: 'call' for bullish diagonal (default) or 'put' for bearish diagonal"
     )
+
     parser.add_argument(
-        "--spread-width",
+        "--min-oi-pct",
         type=float,
-        default=5.0,
-        help="Width between strikes for debit spreads (default: 5.0)"
+        default=0.0,
+        help="Minimum open interest as %% of max OI in chain for long leg selection (default: 0 = no filter)"
     )
-    parser.add_argument(
-        "--top-n",
-        type=int,
-        default=5,
-        help="Number of top candidates to display per ticker (default: 5)"
-    )
+
     parser.add_argument(
         "--json",
         action="store_true",
-        help="Output results as JSON (for programmatic use)"
+        help="Output compact JSON for AI consumption instead of formatted tables"
     )
-    parser.add_argument(
-        "--detailed",
-        action="store_true",
-        help="Show detailed metrics for each candidate (delta, gamma, theta, vega)"
-    )
-    parser.add_argument(
-        "--help-scenarios",
-        action="store_true",
-        help="Show detailed scenario descriptions and use cases"
-    )
-    parser.add_argument(
-        "--help-examples",
-        action="store_true",
-        help="Show common use cases and examples"
-    )
-    
+
     args = parser.parse_args()
-    
-    if not args.tickers and not (args.help_scenarios or args.help_examples):
-        parser.print_help()
-        return
-        
-    if args.help_scenarios or args.help_examples:
-        print("\n--- Scenarios ---")
-        for k, v in SCENARIOS.items(): print(f"{k:15}: {v.direction} outlook ({v.time_horizon_days} days)")
-        print("\n--- Examples ---")
-        print("  python core/strategies/option_strike_optimizer.py SPY --strike-type single_leg")
-        print("  python core/strategies/option_strike_optimizer.py MSFT --scenario earnings --strike-type debit_spread")
-        return
-    
-    optimizer = OptionStrikeOptimizer()
-    results = optimizer.scan_multiple(
-        args.tickers,
-        scenario=args.scenario,
-        strike_type=args.strike_type,
-        option_type=args.option_type,
-        spread_width=args.spread_width,
-        top_n=args.top_n
+
+    # Diagonal mode: extend DTE boundary to 90 to capture longer-dated long legs
+    if args.mode == "diagonal":
+        if args.near_date_cutoff < 90:
+            args.near_date_cutoff = 90
+
+    # Run efficiency comparison (always needed for both modes)
+    result = compare_efficiency(
+        ticker=args.ticker,
+        deadline=args.deadline_date,
+        top_n=args.top_n,
+        target_price=args.target_price,
+        near_date_cutoff=args.near_date_cutoff,
+        option_type=args.option_type
     )
-    
-    if args.json:
-        import json
-        class CustomEncoder(json.JSONEncoder):
-            def default(self, obj):
-                if isinstance(obj, (np.integer, np.floating)): return float(obj)
-                if isinstance(obj, np.ndarray): return obj.tolist()
-                if isinstance(obj, pd.Timestamp): return obj.isoformat()
-                return super().default(obj)
-        print(json.dumps(results, indent=2, cls=CustomEncoder))
+
+    if "error" in result:
+        if args.json:
+            print(json.dumps({"error": result["error"]}, separators=(",", ":")))
+        else:
+            print(f"\nError: {result['error']}")
         return
 
-    # Print results
-    for ticker, result in results.items():
-        print(f"\n--- {ticker.upper()} | {args.scenario} | {args.strike_type} | Spot: ${result.get('spot_price', 0):.2f} ---")
-        
-        if "error" in result:
-            print(f"Error: {result['error']}")
-            continue
-            
-        sr = result.get('support_resistance', {})
-        em = result.get('expected_move', {})
-        gl = em.get('gex_levels', {})
-        
-        print(f"S/R: {sr.get('support', [])[:2]} / {sr.get('resistance', [])[:2]} | Range: ${em.get('lower_expected', 0):.0f}-${em.get('upper_expected', 0):.0f}")
-        print(f"Walls: C: ${gl.get('call_wall')} | P: ${gl.get('put_wall')} | MP: ${gl.get('max_pain')}")
-        
-        ec = em.get("earnings_context", {})
-        if ec and ec.get("next_date"):
-            avg_move = ec.get("avg_realized_move")
-            richness = ec.get("move_richness")
-            richness_label = "cheap" if richness and richness < 1.0 else "expensive" if richness else "N/A"
-            print(
-                f"Earnings: {ec['next_date']} ({ec.get('days_to_earnings', '?')}d away) | "
-                f"Avg Realized Move: {avg_move:.1%}" if avg_move else "Avg Realized Move: N/A",
-                f"| Straddle: {richness_label}" + (f" ({richness:.2f}x)" if richness else "")
-            )
-        
-        candidates = result.get("top_candidates", [])
-        if not candidates:
-            print("\nNo suitable candidates found within scenario constraints.")
-            continue
-            
-        print(f"\nTop {len(candidates)} Candidates:")
-        
-        table_data = []
-        if args.strike_type == "single_leg":
-            headers = ["Rank", "Score", "Expiry", "DTE", "Strike", "Price", "Delta", "Prob Profit", "Exp P&L"]
-            for c in candidates:
-                m = c['metrics']
-                table_data.append([
-                    c['rank'],
-                    f"{c['score']:.4f}",
-                    c['expiration'],
-                    c['dte'],
-                    f"${c['strike']}",
-                    f"${c['price']:.2f}",
-                    f"{m.get('delta', 0):.4f}",
-                    f"{m.get('probability_of_profit', 0):.1%}",
-                    f"${m.get('expected_pnl', 0):.2f}"
-                ])
+    if args.mode == "efficiency":
+        if args.json:
+            print(_format_efficiency_json(result))
         else:
-            headers = ["Rank", "Score", "Expiry", "DTE", "Spread", "Debit", "Max Profit", "Prob Profit", "Exp P&L"]
-            for c in candidates:
-                m = c['metrics']
-                table_data.append([
-                    c['rank'],
-                    f"{c['score']:.4f}",
-                    c['expiration'],
-                    c['dte'],
-                    f"${m.get('long_strike')} / ${m.get('short_strike')}",
-                    f"${m.get('net_debit'):.2f}",
-                    f"${m.get('max_profit'):.2f}",
-                    f"{m.get('probability_of_profit', 0):.1%}",
-                    f"${m.get('expected_pnl', 0):.2f}"
-                ])
-        
-        print(tabulate(table_data, headers=headers, tablefmt="simple"))
-        print()
+            print(format_efficiency_results(result))
+        return
+
+    # Diagonal mode: build diagonal spreads from top candidates
+    diagonal_results = plan_diagonal_spreads(result, top_n=args.top_n, min_oi_pct=args.min_oi_pct,
+                                              option_type=args.option_type)
+
+    if args.json:
+        print(_format_diagonal_json(diagonal_results, result.get("ticker", ""), args.option_type))
+    else:
+        if diagonal_results:
+            print(format_diagonal_results(diagonal_results))
 
 
 if __name__ == "__main__":

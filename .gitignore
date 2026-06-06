@@ -12,6 +12,8 @@ visualizer/*.png
 visualizer/*.html
 test/
 .gex_cache/
+.pi/
+pi-session-*.html
 
 # OS
 .DS_Store

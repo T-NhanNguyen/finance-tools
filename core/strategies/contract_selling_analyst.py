@@ -396,7 +396,10 @@ def run_scanner():
     parser.add_argument("--engine", type=str.upper, choices=["BOTH", "CASH", "WHEEL"], default="BOTH", help="Engine filter mode")
     parser.add_argument("--expiration", help="Expiration date (YYYY-MM-DD, partial string, or index)")
     parser.add_argument("--cost-basis,shares", "--cost-basis-shares", dest="cost_basis_shares", help="User defined cost basis and shares format: TICKER,SHARES or TICKER,COST_BASIS,SHARES")
+    parser.add_argument("--json", action="store_true", help="Output compact JSON for AI consumption")
     args = parser.parse_args()
+    
+    import json  # for JSON output
     
     parsed_tickers = []
     parsed_expiration = args.expiration
@@ -443,8 +446,12 @@ def run_scanner():
     
     cash_equity = sum(LENDERS)
     analyst = ContractSellingAnalyst(cash_equity=cash_equity)
-    print(f"Working Capital: ${analyst.total_working_capital:,.2f} (${analyst.cash_equity/1000:.0f}k Cash)")
-    print(f"Strategy: {args.strategy.upper()} | Engine Mode: {args.engine.upper()}")
+    
+    if args.json:
+        results_json = []
+    else:
+        print(f"Working Capital: ${analyst.total_working_capital:,.2f} (${analyst.cash_equity/1000:.0f}k Cash)")
+        print(f"Strategy: {args.strategy.upper()} | Engine Mode: {args.engine.upper()}")
     
     from concurrent.futures import ThreadPoolExecutor
     def process_ticker(t):
@@ -472,9 +479,16 @@ def run_scanner():
     for t, res in collected_results:
         try:
              if "error" in res:
-                 print(f"\nScanning {t.upper()}... Error: {res['error']}")
+                 if args.json:
+                     results_json.append({"ticker": t, "error": res["error"]})
+                 else:
+                     print(f"\nScanning {t.upper()}... Error: {res['error']}")
                  continue
-                 
+
+             if args.json:
+                 results_json.append(res)
+                 continue
+             
              print(f"\n{'='*70}\nScanning {t.upper()} (Expiration Chain: {res.get('expiration')})\n{'='*70}")
              is_cc = res.get("strategy_type", "CSP").upper() == "CC"
              benchmark_label = "Call" if is_cc else "Put"
@@ -506,7 +520,13 @@ def run_scanner():
                           print(f"    -> Premium: ${p['Premium_Raw']:.2f} | Total Prem: ${p['Total_Premium']:,.2f} ({p['Contracts']} Contracts)")
                           print(f"    -> Capital Deployed: ${p['Capital_Deployed']:,.2f} | CapEff: {p['Cap_Efficiency']:.4f}\n")
         except Exception as e:
-             print(f"Unexpected Exception for {t}: {e}")
+             if args.json:
+                 results_json.append({"ticker": t, "error": str(e)})
+             else:
+                 print(f"Unexpected Exception for {t}: {e}")
+
+    if args.json:
+        print(json.dumps(results_json if len(results_json) > 1 else results_json[0], separators=(",", ":")))
 
 if __name__ == "__main__":
     run_scanner()

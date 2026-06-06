@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import json
 from core.data import getOptionChain, getOptionExpirations, getCurrentPrice
 from core.analysis import calculateGamma
 from datetime import datetime
@@ -9,7 +10,7 @@ import sys
 
 
 
-def visualize_gex(ticker, expiration_input=None):
+def visualize_gex(ticker, expiration_input=None, output_json=False):
     ticker = ticker.upper()
     expiration = parse_flexible_date(ticker, expiration_input)
     
@@ -17,7 +18,8 @@ def visualize_gex(ticker, expiration_input=None):
         print(f"Error: Could not find any option expirations for {ticker}")
         return
 
-    print(f"\nTargeting Expiration: {expiration} for {ticker}")
+    if not output_json:
+        print(f"\nTargeting Expiration: {expiration} for {ticker}")
     # 1. Fetch Spot Price
     spot_price = getCurrentPrice(ticker)
     if not spot_price:
@@ -75,7 +77,9 @@ def visualize_gex(ticker, expiration_input=None):
     
     plot_df = combined_agg.iloc[start_idx:end_idx].copy()
 
-    # 4. ASCII Chart with Color Overlay
+    if output_json:
+        _print_json_output(ticker, expiration, spot_price, plot_df)
+        return
     # Terminal Colors
     GREEN = "\033[92m"
     RED = "\033[91m"
@@ -156,10 +160,28 @@ def visualize_gex(ticker, expiration_input=None):
     print("-" * 85)
     print(f"{GREEN}GEX (#){RESET} | {BLUE}OI (·){RESET} | {CYAN}>> At-The-Money{RESET}")
 
+def _print_json_output(ticker, expiration, spot_price, plot_df):
+    """Print GEX data as a compact JSON block for AI consumption."""
+    chain = []
+    for _, row in plot_df.iterrows():
+        chain.append({
+            "strike": round(float(row["strike"]), 2),
+            "gex_m": round(float(row["gex"] / 1e6), 4),
+            "oi_k": round(float(row["openInterest"] / 1e3), 2)
+        })
+    print(json.dumps({
+        "ticker": ticker,
+        "expiration": expiration,
+        "spot_price": round(spot_price, 2),
+        "chain": chain
+    }, separators=(",", ":")))
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Visualize Gamma Exposure (GEX) for a ticker.")
     parser.add_argument("ticker", nargs="?", help="Stock ticker symbol (e.g., SPY, QQQ, SLV)")
     parser.add_argument("date", nargs="?", help="Expiration date (YYYY-MM-DD, partial string, or index 0, 1, 2...)")
+    parser.add_argument("--json", action="store_true", help="Print compact JSON for AI consumption instead of ASCII chart")
     
     args = parser.parse_args()
     
@@ -171,4 +193,4 @@ if __name__ == "__main__":
         date = input("Enter Expiration/Index (leave blank for nearest): ").strip()
         if not date: date = None
         
-    visualize_gex(ticker, date)
+    visualize_gex(ticker, date, output_json=args.json)
