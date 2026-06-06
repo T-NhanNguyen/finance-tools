@@ -1675,6 +1675,7 @@ def plan_diagonal_spreads(efficiency_result: Dict, top_n: int = 5, min_oi_pct: f
                 sl["cumulative_gross_premium"] = sl["gross_premium"]
 
             top_net_credit = short_legs[0]["net_credit"]
+            plan_spot = gex_data.get("spotPrice", 0)
 
             results.append({
                 "long_strike": long_strike,
@@ -1687,7 +1688,8 @@ def plan_diagonal_spreads(efficiency_result: Dict, top_n: int = 5, min_oi_pct: f
                 "total_net_credit": top_net_credit,
                 "short_legs": short_legs,
                 "num_rolls": len(short_legs),
-                "option_type": option_type
+                "option_type": option_type,
+                "spot_price": round(plan_spot, 2)
             })
         return results
 
@@ -1700,14 +1702,23 @@ def plan_diagonal_spreads(efficiency_result: Dict, top_n: int = 5, min_oi_pct: f
     return diagonal_plans
 
 
-def format_diagonal_results(diagonal_plans: List[Dict]) -> str:
+def format_diagonal_results(diagonal_plans: List[Dict], ticker: str = "", deadline: str = "", target_price: float = None) -> str:
     """Format diagonal spread plans into readable tables."""
+    from datetime import datetime
     from tabulate import tabulate
 
     lines = []
 
+    option_label = diagonal_plans[0].get("option_type", "call") if diagonal_plans else "call"
+    direction = "bullish" if option_label == "call" else "bearish"
+    target_str = f" | Target: ${target_price:.0f}" if target_price else ""
+    spot = diagonal_plans[0].get("spot_price", 0) if diagonal_plans else 0
+    spot_str = f" | Spot: ${spot:.2f}" if spot else ""
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+
     lines.append(f"\n{'='*75}")
     lines.append(f"  Diagonal Spread Plans")
+    lines.append(f"  {ticker.upper() if ticker else ''} — {option_label.capitalize()} ({direction}){target_str}{spot_str} | Deadline: {deadline} | Generated: {now_str}")
     lines.append(f"{'='*75}")
 
     for plan in diagonal_plans:
@@ -1867,7 +1878,8 @@ def run_optimizer_scanner():
         print(_format_diagonal_json(diagonal_results, result.get("ticker", ""), args.option_type))
     else:
         if diagonal_results:
-            print(format_diagonal_results(diagonal_results))
+            print(format_diagonal_results(diagonal_results, ticker=result.get("ticker", ""), 
+                                          deadline=args.deadline_date, target_price=args.target_price))
 
 
 if __name__ == "__main__":
