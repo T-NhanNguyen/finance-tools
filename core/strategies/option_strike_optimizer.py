@@ -1225,30 +1225,25 @@ def compare_efficiency(ticker: str, deadline: str, top_n: int = 5,
 
 def _format_efficiency_json(result: Dict) -> str:
     """Build a compact JSON block for the efficiency comparison — candidates only, no group tables."""
-    out = {
-        "ticker": result.get("ticker", ""),
-        "option_type": result.get("option_type", "call"),
-        "deadline": result.get("deadline", ""),
-        "target_dte": result.get("target_dte", 0),
-        "spot_price": result.get("spot_price", 0),
-        "expected_move": result.get("expected_move", 0),
-        "expected_move_pct": round(result.get("expected_move", 0) / max(result.get("spot_price", 1), 0.01) * 100, 2),
-        "near_date_cutoff": result.get("near_date_cutoff", 30),
-        "expirations_scanned": result.get("expirations_scanned", 0),
-        "expirations_passed_oi_filter": result.get("expirations_passed_oi_filter", 0),
-        "warnings": result.get("warnings", []),
-        "candidates": result.get("candidates", [])
-    }
+    out = dict(result)
+    # Strip group table fields that are redundant with the ranked candidates list
+    for key in ("itm_near", "otm_far", "total_candidates"):
+        out.pop(key, None)
     return json.dumps(out, separators=(",", ":"))
 
 
-def _format_diagonal_json(diagonal_plans: List[Dict], ticker: str = "", option_type: str = "call") -> str:
+def _format_diagonal_json(diagonal_plans: List[Dict], ticker: str = "", option_type: str = "call",
+                          deadline: str = "", target_price: float = None, spot_price: float = 0) -> str:
     """Build a compact JSON block for diagonal spread plans — no Ranked Summary."""
     out = {
         "ticker": ticker,
         "option_type": option_type,
+        "deadline": deadline,
+        "spot_price": spot_price,
         "plans": diagonal_plans
     }
+    if target_price is not None:
+        out["target_price"] = target_price
     return json.dumps(out, separators=(",", ":"))
 
 
@@ -1875,7 +1870,9 @@ def run_optimizer_scanner():
                                               option_type=args.option_type)
 
     if args.json:
-        print(_format_diagonal_json(diagonal_results, result.get("ticker", ""), args.option_type))
+        print(_format_diagonal_json(diagonal_results, result.get("ticker", ""), args.option_type,
+                                      deadline=args.deadline_date, target_price=args.target_price,
+                                      spot_price=result.get("spot_price", 0)))
     else:
         if diagonal_results:
             print(format_diagonal_results(diagonal_results, ticker=result.get("ticker", ""), 

@@ -17,10 +17,10 @@ as needed for alternative scenarios.
 # The sum becomes your total working capital (P_0).
 # ===========================================================
 LENDERS = [
-    100_000,    # Tam
-    17_300,     # Mom
-    54_700,     # gains and others
-    # 1_000_000,
+    100_000,    # Brother
+    # 30_000      # Brother
+    # 17_300,     # Parents
+    # 54_700,     # gains and others
 ]
 
 # Annual interest rate on all loans (flat rate applied to total principal).

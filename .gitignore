@@ -20,3 +20,7 @@ pi-session-*.html
 Thumbs.db
 
 *.png
+
+# Environment (secrets — never commit)
+.env
+.env.local

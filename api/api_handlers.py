@@ -333,7 +333,7 @@ def getPortfolioSimulationData(
     Simulate shared portfolio margin allocation across multiple tickers.
     """
     try:
-        portfolio = simulate_multi_asset_portfolio(
+        portfolio, ranked_tickers = simulate_multi_asset_portfolio(
             tickers=tickers,
             strategy_type=strategy,
             expiration=expiration,

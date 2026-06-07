@@ -3,8 +3,9 @@ FastAPI Backend Server
 Provides HTTP endpoints for finance tools with structured JSON responses.
 """
 
-from fastapi import FastAPI, HTTPException, Query, Header, Depends
+from fastapi import FastAPI, HTTPException, Query, Header, Depends, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from typing import Optional, List
 import os
 
@@ -249,6 +250,29 @@ async def optimize_diagonal(request: DiagonalRequest):
     if "error" in result:
         raise HTTPException(status_code=400, detail=result)
     return result
+
+
+# ============================================================================
+# Env Config (injects API_SECRET_KEY for frontend use)
+# ============================================================================
+
+@app.get("/api/config.js")
+async def config_js():
+    """Return a tiny JS snippet with non-sensitive runtime config."""
+    secret = os.getenv("API_SECRET_KEY", "")
+    if secret:
+        return Response(content=f"window.API_SECRET='{secret}';", media_type="application/javascript")
+    return Response(content="", media_type="application/javascript")
+
+
+# ============================================================================
+# Static File Mounting (must be after all API routes)
+# ============================================================================
+
+import os
+webapp_dir = os.path.join(os.path.dirname(__file__), "..", "webapp")
+if os.path.isdir(webapp_dir):
+    app.mount("/", StaticFiles(directory=webapp_dir, html=True), name="webapp")
 
 
 # ============================================================================

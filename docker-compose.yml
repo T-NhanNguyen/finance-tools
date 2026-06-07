@@ -26,7 +26,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONPATH=/app
-      - API_SECRET_KEY=your-secret-password-here  # Change this!
+      - API_SECRET_KEY=${API_SECRET_KEY}
       - ALLOWED_ORIGINS=*
     extra_hosts:
       - "host.docker.internal:host-gateway"

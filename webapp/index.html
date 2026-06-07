@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Finance Tools</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<style>
+body{font-family:Verdana,Geneva,sans-serif;background:#fff;color:#000;margin:0;padding:20px;font-size:13px}
+h1{font-size:22px;color:#039;margin:0 0 15px 0}
+h2{font-size:16px;color:#039;margin:0 0 10px 0}
+.tab-bar{border-bottom:2px solid #999;margin-bottom:0;padding:0}
+.tab-btn{background:#e8e8e8;border:1px solid #999;border-bottom:none;padding:6px 14px;margin:0 2px -2px 0;cursor:pointer;font-size:12px;font-family:Verdana;color:#333}
+.tab-btn.active{background:#fff;border-bottom:2px solid #fff;font-weight:700;color:#000}
+.tab-content{display:none;border:1px solid #999;border-top:none;padding:15px;background:#fff}
+.tab-content.active{display:block}
+.form-row{padding:8px 0;border-bottom:1px solid #ddd;margin-bottom:10px}
+.form-row label{font-size:11px;color:#666;margin-right:4px}
+.form-row input,.form-row select{border:1px solid #999;padding:3px 6px;font-size:12px;font-family:Verdana;margin-right:10px}
+.btn{background:#e8e8e8;border:1px solid #999;padding:4px 14px;cursor:pointer;font-size:12px;font-family:Verdana}
+.btn:hover{background:#ccc}
+.btn:disabled{color:#999;cursor:default}
+.spinner{display:none;margin-left:6px;font-size:11px;color:#666}
+.spinner.visible{display:inline}
+table{border-collapse:collapse;width:100%;font-size:11px;margin:8px 0}
+th{background:#d0d8e8;border:1px solid #999;padding:4px 8px;text-align:left;font-size:11px;white-space:nowrap}
+td{border:1px solid #ccc;padding:3px 8px;vertical-align:top}
+tr:nth-child(even){background:#f4f4f4}
+tr:hover{background:#e0e8f0}
+.right{text-align:right}
+.center{text-align:center}
+.section{margin:12px 0}
+.error{color:#c00;font-weight:700}
+.chart-container{width:100%;max-width:800px;height:350px;margin:12px 0}
+.copy-btn{float:right;font-size:10px;background:#e8e8e8;border:1px solid #999;padding:2px 10px;cursor:pointer;margin-left:6px}
+.copy-btn:hover{background:#ccc}
+.toolbar{overflow:hidden;margin-bottom:4px}
+</style>
+</head>
+<body>
+<h1>Finance Tools</h1>
+<div class="tab-bar" id="tabBar"></div>
+<div class="tab-content active" id="tab-gex"></div>
+<div class="tab-content" id="tab-indicators"></div>
+<div class="tab-content" id="tab-cs"></div>
+<div class="tab-content" id="tab-portfolio"></div>
+<div class="tab-content" id="tab-efficiency"></div>
+<div class="tab-content" id="tab-diagonal"></div>
+<script src="/api/config.js"></script>
+<script>
+const TABS=[
+  {id:'gex',label:'GEX',build:buildGex},
+  {id:'indicators',label:'Indicators',build:buildIndicators},
+  {id:'cs',label:'Contract Selling',build:buildCS},
+  {id:'portfolio',label:'Portfolio',build:buildPortfolio},
+  {id:'efficiency',label:'Efficiency',build:buildEfficiency},
+  {id:'diagonal',label:'Diagonal',build:buildDiagonal}
+];
+let activeTab='gex';
+let charts={};
+
+function renderTabs(){
+  const bar=document.getElementById('tabBar');
+  bar.innerHTML=TABS.map(t=>'<button class="tab-btn'+(t.id===activeTab?' active':'')+'" onclick="switchTab(\''+t.id+'\')">'+t.label+'</button>').join('');
+  TABS.forEach(t=>document.getElementById('tab-'+t.id).classList.toggle('active',t.id===activeTab));
+}
+function switchTab(id){activeTab=id;renderTabs();TABS.filter(t=>t.id===id).forEach(t=>t.build());}
+
+function headers(){const h={};if(window.API_SECRET)h['X-API-Secret']=window.API_SECRET;return h;}
+
+function fetchData(containerId,url,opts,renderFn){
+  const btn=document.querySelector('#'+containerId+' .btn');
+  const sp=document.querySelector('#'+containerId+' .spinner');
+  const box=document.querySelector('#'+containerId+' .result');
+  btn.disabled=true;if(sp)sp.classList.add('visible');
+  return fetch(url,opts).then(r=>r.text()).then(t=>{
+    box.dataset.raw=t;
+    try{const d=JSON.parse(t);renderFn(box,d);}
+    catch(e){box.innerHTML='<div class="error">Failed to parse response: '+e.message+'</div>';}
+    box.style.display='block';
+  }).catch(e=>{
+    box.innerHTML='<div class="error">Error: '+e.message+'</div>';
+    box.style.display='block';
+  }).finally(()=>{btn.disabled=false;if(sp)sp.classList.remove('visible');});
+}
+
+function makeForm(id,fields,action){
+  const c=document.getElementById(id);
+  const r=document.createElement('div');r.className='form-row';
+  fields.forEach(f=>{
+    const l=document.createElement('label');l.textContent=f.label+':';
+    const inp=f.tag==='select'?(()=>{const s=document.createElement('select');f.options.forEach(o=>{const opt=document.createElement('option');opt.value=o;opt.textContent=o;s.appendChild(opt)});return s})():(()=>{const i=document.createElement('input');i.type='text';if(f.value)i.value=f.value;if(f.placeholder)i.placeholder=f.placeholder;return i})();
+    inp.id=id+'-'+f.key;
+    r.appendChild(l);r.appendChild(inp);
+  });
+  const btn=document.createElement('button');btn.className='btn';btn.textContent='Go';
+  const sp=document.createElement('span');sp.className='spinner';sp.textContent=' loading...';
+  r.appendChild(btn);r.appendChild(sp);c.appendChild(r);
+  btn.onclick=action;
+  const tb=document.createElement('div');tb.className='toolbar';
+  const copy=document.createElement('button');copy.className='copy-btn';copy.textContent='Copy JSON';
+  copy.onclick=function(){
+    const box=document.querySelector('#'+id+' .result');
+    if(box&&box.dataset.raw)navigator.clipboard.writeText(box.dataset.raw).then(()=>{copy.textContent='Copied!';setTimeout(()=>copy.textContent='Copy JSON',1500);});
+  };
+  tb.appendChild(copy);
+  const box=document.createElement('div');box.className='result';
+  c.appendChild(tb);c.appendChild(box);
+}
+
+function jsonTable(headers,rows){
+  if(!rows||!rows.length)return'<div class="error">No results.</div>';
+  let h=headers.map(h=>'<th'+(h[1]?' class="'+h[1]+'"':'')+'>'+h[0]+'</th>').join('');
+  let b=rows.map(r=>'<tr>'+r.map((c,i)=>'<td'+(headers[i]&&headers[i][1]?' class="'+headers[i][1]+'"':'')+'>'+c+'</td>').join('')+'</tr>').join('');
+  return'<table><tr>'+h+'</tr>'+b+'</table>';
+}
+
+// ─── GEX ──────────────────────────────
+function buildGex(){
+  const c=document.getElementById('tab-gex');
+  if(c.dataset.built)return;c.dataset.built=1;
+  c.innerHTML='<h2>Gamma Exposure</h2>';
+  makeForm('tab-gex',[
+    {key:'ticker',label:'Ticker',value:'MRVL'},
+    {key:'expiration',label:'Exp',placeholder:'nearest'},
+  ],()=>{
+    const t=document.getElementById('tab-gex-ticker').value.trim();
+    const e=document.getElementById('tab-gex-expiration').value.trim();
+    fetchData('tab-gex','/api/gex/'+t+(e?'?expiration='+encodeURIComponent(e):''),{headers:headers()},(box,raw)=>{
+      if(raw.error){box.innerHTML='<div class="error">'+raw.error+'</div>';return;}
+      const strikes=raw.strikes||[];
+      if(!strikes.length){box.innerHTML='<div class="error">No strikes.</div>';return;}
+
+      // Build chart
+      const wrapper=document.createElement('div');
+      wrapper.innerHTML='<div class="section">Spot: <b>$'+raw.spotPrice.toFixed(2)+'</b> | Exp: '+raw.expiration+' | DTE: '+raw.daysToExpiration+'</div>'
+        +'<div class="chart-container" style="height:300px;max-width:100%"><canvas id="chart-gex"></canvas></div>';
+      box.innerHTML='';box.appendChild(wrapper);
+
+      Object.values(charts).forEach(c=>{try{c.destroy();}catch(e){}});
+
+      const labels=strikes.map(s=>s.strike.toFixed(0));
+      const gexVals=strikes.map(s=>s.gexMillions);
+      const colors=strikes.map(s=>s.gexMillions>=0?'rgba(0,153,51,0.7)':'rgba(204,0,0,0.7)');
+      const borderColors=strikes.map(s=>s.gexMillions>=0?'rgba(0,153,51,1)':'rgba(204,0,0,1)');
+
+      // Find ATM index for annotation
+      const atmIdx=strikes.reduce((best,s,i)=>Math.abs(s.strike-raw.spotPrice)<Math.abs(strikes[best].strike-raw.spotPrice)?i:best,0);
+
+      // Add a thin vertical line annotation for spot price using a plugin
+      const spotLine={id:'spotLine',afterDraw(chart){
+        const ctx=chart.ctx;
+        const xScale=chart.scales.x;
+        const yScale=chart.scales.y;
+        if(!xScale||!yScale)return;
+        const x=xScale.getPixelForValue(raw.spotPrice);
+        if(x<0||x>chart.width)return;
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(x,yScale.top);
+        ctx.lineTo(x,yScale.bottom);
+        ctx.strokeStyle='rgba(0,51,153,0.6)';
+        ctx.lineWidth=1.5;
+        ctx.setLineDash([4,3]);
+        ctx.stroke();
+        ctx.fillStyle='#039';
+        ctx.font='10px Verdana';
+        ctx.textAlign='center';
+        ctx.fillText('$'+raw.spotPrice.toFixed(2),x,yScale.top-4);
+        ctx.restore();
+      }};
+
+      charts.gex=new Chart(document.getElementById('chart-gex'),{
+        type:'bar',data:{labels,datasets:[{label:'GEX ($M)',data:gexVals,backgroundColor:colors,borderColor:borderColors,borderWidth:0.5}]},
+        plugins:[spotLine],
+        options:{
+          responsive:true,maintainAspectRatio:false,
+          plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>'$'+ctx.parsed.y.toFixed(4)+'M'}}},
+          scales:{
+            x:{ticks:{font:{size:8},maxRotation:90,autoSkip:true,maxTicksLimit:40},grid:{display:false}},
+            y:{ticks:{font:{size:9},callback:v=>v.toFixed(2)+'M'},grid:{color:'#ddd'}}
+          }
+        }
+      });
+
+      // Table below chart — append via DOM, not innerHTML (preserves canvas)
+      const tableDiv=document.createElement('div');
+      const rows=strikes.map(s=>{
+        const gc=s.gexMillions>=0?'green':'red';
+        return['$'+s.strike.toFixed(2),'<span style="color:'+gc+'">'+s.gexMillions.toFixed(4)+'</span>',s.openInterestThousands.toFixed(2),s.callOI.toFixed(0),s.putOI.toFixed(0),(s.callIV*100).toFixed(1)+'%',(s.putIV*100).toFixed(1)+'%'];
+      });
+      tableDiv.innerHTML=jsonTable([['Strike','right'],['GEX ($M)','right'],['OI (K)','right'],['Call OI','right'],['Put OI','right'],['Call IV','right'],['Put IV','right']],rows);
+      wrapper.appendChild(tableDiv);
+    });
+  });
+}
+
+// ─── Indicators ───────────────────────
+function buildIndicators(){
+  const c=document.getElementById('tab-indicators');
+  if(c.dataset.built)return;c.dataset.built=1;
+  c.innerHTML='<h2>Price Chart &amp; Indicators</h2>';
+  makeForm('tab-indicators',[
+    {key:'ticker',label:'Ticker',value:'MRVL'},
+    {key:'period',label:'Period',value:'3mo'},
+  ],()=>{
+    const t=document.getElementById('tab-indicators-ticker').value.trim();
+    const p=document.getElementById('tab-indicators-period').value.trim();
+    fetchData('tab-indicators','/api/indicators/'+t+'?period='+p+'&indicators=MACD%2CRSI%2COBV',{headers:headers()},(box,raw)=>{
+      if(raw.error){box.innerHTML='<div class="error">'+raw.error+'</div>';return;}
+      const dps=raw.dataPoints||[];
+      if(!dps.length){box.innerHTML='<div class="error">No data points.</div>';return;}
+      const labels=dps.map(d=>d.date.slice(0,10));
+      const closes=dps.map(d=>d.close);
+      const volumes=dps.map(d=>d.volume);
+      const macds=dps.map(d=>d.macd!==null?d.macd:null);
+      const rsis=dps.map(d=>d.rsi!==null?d.rsi:null);
+
+      const wrapper=document.createElement('div');
+      wrapper.innerHTML='<div class="section">Avg Vol: '+(raw.averageDailyVolume/1e6).toFixed(1)+'M</div>'
+        +'<div class="chart-container"><canvas id="chart-price"></canvas></div>'
+        +'<div class="chart-container"><canvas id="chart-macd"></canvas></div>'
+        +'<div class="chart-container"><canvas id="chart-rsi"></canvas></div>';
+      box.innerHTML='';box.appendChild(wrapper);
+
+      Object.values(charts).forEach(c=>{try{c.destroy();}catch(e){}});
+      charts={};
+
+      const baseOpts={
+        responsive:true,maintainAspectRatio:false,
+        plugins:{legend:{labels:{font:{family:'Verdana',size:10}},position:'top'}},
+        scales:{x:{ticks:{font:{size:9}},grid:{color:'#ddd'}},y:{ticks:{font:{size:9}},grid:{color:'#ddd'}}}
+      };
+
+      charts.price=new Chart(document.getElementById('chart-price'),{
+        type:'line',data:{
+          labels,
+          datasets:[
+            {label:'Close',data:closes,borderColor:'#039',backgroundColor:'rgba(0,51,153,0.05)',borderWidth:1.5,pointRadius:0,fill:true,yAxisID:'y'},
+            {label:'Volume',data:volumes,borderColor:'#ccc',backgroundColor:'rgba(200,200,200,0.3)',borderWidth:0,pointRadius:0,fill:true,yAxisID:'y1',type:'bar'}
+          ]
+        },
+        options:Object.assign({},baseOpts,{
+          scales:Object.assign({},baseOpts.scales,{
+            y1:{position:'right',grid:{display:false},ticks:{font:{size:9},callback:v=>(v/1e6).toFixed(1)+'M'}}
+          }),
+          plugins:Object.assign({},baseOpts.plugins,{tooltip:{mode:'index',intersect:false}})
+        })
+      });
+
+      if(macds.some(v=>v!==null)){
+        charts.macd=new Chart(document.getElementById('chart-macd'),{
+          type:'line',data:{
+            labels,
+            datasets:[
+              {label:'MACD',data:macds,borderColor:'#039',borderWidth:1,pointRadius:0},
+              {label:'Signal',data:dps.map(d=>d.macdSignal!==null?d.macdSignal:null),borderColor:'#c60',borderWidth:1,pointRadius:0},
+              {label:'Histogram',data:dps.map(d=>d.macdHistogram!==null?d.macdHistogram:null),borderColor:'#999',borderWidth:0,pointRadius:0,type:'bar',backgroundColor:function(ctx){const v=ctx.parsed.y;return v>=0?'rgba(0,153,51,0.5)':'rgba(204,0,0,0.5)';}}
+            ]
+          },
+          options:Object.assign({},baseOpts,{plugins:Object.assign({},baseOpts.plugins,{tooltip:{mode:'index',intersect:false}})})
+        });
+      }
+
+      if(rsis.some(v=>v!==null)){
+        charts.rsi=new Chart(document.getElementById('chart-rsi'),{
+          type:'line',data:{
+            labels,
+            datasets:[
+              {label:'RSI',data:rsis,borderColor:'#039',borderWidth:1.5,pointRadius:0},
+              {label:'Overbought 70',data:Array(labels.length).fill(70),borderColor:'rgba(204,0,0,0.3)',borderWidth:0.5,borderDash:[3,3],pointRadius:0},
+              {label:'Oversold 30',data:Array(labels.length).fill(30),borderColor:'rgba(0,153,0,0.3)',borderWidth:0.5,borderDash:[3,3],pointRadius:0}
+            ]
+          },
+          options:Object.assign({},baseOpts,{scales:Object.assign({},baseOpts.scales,{y:{min:0,max:100,ticks:{...baseOpts.scales.y.ticks,stepSize:10}}})})
+        });
+      }
+    });
+  });
+}
+
+// ─── Contract Selling ─────────────────
+function buildCS(){
+  const c=document.getElementById('tab-cs');
+  if(c.dataset.built)return;c.dataset.built=1;
+  c.innerHTML='<h2>Contract Selling Analysis</h2>';
+  makeForm('tab-cs',[
+    {key:'ticker',label:'Ticker',value:'ASTS'},
+    {key:'strategy',label:'Strat',tag:'select',options:['CSP','CC']},
+    {key:'expiration',label:'Exp',placeholder:'nearest'},
+  ],()=>{
+    const t=document.getElementById('tab-cs-ticker').value.trim();
+    const s=document.getElementById('tab-cs-strategy').value;
+    const e=document.getElementById('tab-cs-expiration').value.trim();
+    fetchData('tab-cs','/api/contract-selling',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},headers()),body:JSON.stringify({ticker:t,strategy:s,expiration:e||null})},(box,raw)=>{
+      if(raw.error){box.innerHTML='<div class="error">'+raw.error+'</div>';return;}
+      let html='<div class="section">Spot: <b>$'+raw.spot_price.toFixed(2)+'</b> | Cap: $'+(raw.effective_capital/1e3).toFixed(0)+'K</div>';
+      for(const[engine,pillars] of Object.entries(raw.pillars||{})){
+        if(!pillars||!pillars.length)continue;
+        html+='<div class="section"><b>'+engine.replace(/_/g,' ')+'</b></div>';
+        const rows=pillars.map(p=>{
+          const totalCredit=100*p.Contracts*p.Premium_Raw;
+          return[p.Rank,p.Strike.toFixed(2),p.Contracts,'$'+p.Premium_Raw.toFixed(2),'$'+totalCredit.toFixed(2),p.Trade_ROI,p.Post_Tax_ROI,p.Pillar_Score.toFixed(4),p.WTZ_Weeks.toFixed(1)];
+        });
+        html+=jsonTable([['Rank','right'],['Strike','right'],['Contracts','right'],['Premium','right'],['Total Credit','right'],['ROI'],['Post-Tax ROI'],['Score','right'],['Weeks To Zero','right']],rows);
+      }
+      box.innerHTML=html;
+    });
+  });
+}
+
+// ─── Portfolio ────────────────────────
+function buildPortfolio(){
+  const c=document.getElementById('tab-portfolio');
+  if(c.dataset.built)return;c.dataset.built=1;
+  c.innerHTML='<h2>Portfolio Simulation</h2>';
+  makeForm('tab-portfolio',[
+    {key:'tickers',label:'Tickers',value:'ASTS,MRVL'},
+    {key:'strategy',label:'Strat',tag:'select',options:['CSP','CC']},
+  ],()=>{
+    const tk=document.getElementById('tab-portfolio-tickers').value.split(',').map(s=>s.trim()).filter(Boolean);
+    const s=document.getElementById('tab-portfolio-strategy').value;
+    fetchData('tab-portfolio','/api/portfolio-simulation',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},headers()),body:JSON.stringify({tickers:tk,strategy:s})},(box,raw)=>{
+      if(raw.error){box.innerHTML='<div class="error">'+raw.error+'</div>';return;}
+      let html='<div class="section">Cash: <b>$'+(raw.cash/1e3).toFixed(0)+'K</b> | Premiums: $'+(raw.accumulated_premiums/1e3).toFixed(1)+'K | BP Remain: $'+(raw.buying_power_remaining/1e3).toFixed(0)+'K</div>';
+      const rows=(raw.positions||[]).map(p=>[p.ticker,'$'+p.strike.toFixed(2),p.contracts,'$'+(p.notional/1e3).toFixed(0)+'K','$'+p.premium_collected.toFixed(2),p.strategy_type,'$'+(p.margin_call_floor||0).toFixed(2)]);
+      if(rows.length)html+=jsonTable([['Ticker'],['Strike','right'],['Contracts','right'],['Notional','right'],['Premium','right'],['Type'],['Margin Call Floor','right']],rows);
+      box.innerHTML=html;
+    });
+  });
+}
+
+// ─── Efficiency ───────────────────────
+function buildEfficiency(){
+  const c=document.getElementById('tab-efficiency');
+  if(c.dataset.built)return;c.dataset.built=1;
+  c.innerHTML='<h2>Efficiency Comparison</h2>';
+  makeForm('tab-efficiency',[
+    {key:'ticker',label:'Ticker',value:'MRVL'},
+    {key:'deadline',label:'Deadline',value:'09/18/2026'},
+    {key:'target_price',label:'Target',value:'300'},
+    {key:'otype',label:'Type',tag:'select',options:['call','put']},
+  ],()=>{
+    const t=document.getElementById('tab-efficiency-ticker').value.trim();
+    const d=document.getElementById('tab-efficiency-deadline').value.trim();
+    const p=parseFloat(document.getElementById('tab-efficiency-target_price').value)||null;
+    const o=document.getElementById('tab-efficiency-otype').value;
+    fetchData('tab-efficiency','/api/optimize/efficiency',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},headers()),body:JSON.stringify({ticker:t,deadline:d,target_price:p,option_type:o})},(box,raw)=>{
+      if(raw.error){box.innerHTML='<div class="error">'+raw.error+'</div>';return;}
+      let html='<div class="section">Spot: <b>$'+raw.spot_price.toFixed(2)+'</b> | Target DTE: '+raw.target_dte+'d | Exp Move: $'+raw.expected_move.toFixed(2)+' ('+raw.expected_move_pct.toFixed(1)+'%)</div>';
+      if(raw.warnings&&raw.warnings.length)html+='<div class="error">'+raw.warnings.join('<br>')+'</div>';
+      const cand=raw.candidates||[];
+      if(cand.length){
+        const rows=cand.map(c=>[c.rank,c.category,c.expiration.slice(-5),c.dte,'$'+c.strike.toFixed(0),'$'+c.effective_price.toFixed(2),c.cost_to_cover!==null?c.cost_to_cover.toFixed(2)+'x':'-',c.theta_roi!==null?c.theta_roi.toFixed(2)+'x':'-','$'+c.expected_pnl.toFixed(2),c.delta.toFixed(3),c.combined_score.toFixed(4)]);
+        html+=jsonTable([['Rank','right'],['Category'],['Expiry'],['DTE','right'],['Strike','right'],['Price','right'],['Cost to Cover','right'],['Theta ROI','right'],['Exp P&L','right'],['Delta','right'],['Score','right']],rows);
+      }
+      box.innerHTML=html;
+    });
+  });
+}
+
+// ─── Diagonal ─────────────────────────
+function buildDiagonal(){
+  const c=document.getElementById('tab-diagonal');
+  if(c.dataset.built)return;c.dataset.built=1;
+  c.innerHTML='<h2>Diagonal Spread Planner</h2>';
+  makeForm('tab-diagonal',[
+    {key:'ticker',label:'Ticker',value:'ASTS'},
+    {key:'deadline',label:'Deadline',value:'09/18/2026'},
+    {key:'target_price',label:'Target',value:'100'},
+    {key:'otype',label:'Type',tag:'select',options:['call','put']},
+  ],()=>{
+    const t=document.getElementById('tab-diagonal-ticker').value.trim();
+    const d=document.getElementById('tab-diagonal-deadline').value.trim();
+    const p=parseFloat(document.getElementById('tab-diagonal-target_price').value)||null;
+    const o=document.getElementById('tab-diagonal-otype').value;
+    fetchData('tab-diagonal','/api/optimize/diagonal',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},headers()),body:JSON.stringify({ticker:t,deadline:d,target_price:p,option_type:o})},(box,raw)=>{
+      if(raw.error){box.innerHTML='<div class="error">'+raw.error+'</div>';return;}
+      if(!raw.plans||!raw.plans.length){box.innerHTML='<div class="error">No plans found.</div>';return;}
+      let html='<div class="section">'+raw.ticker+' &mdash; '+raw.option_type+' | Spot: <b>$'+raw.spot_price.toFixed(2)+'</b>'+(raw.target_price!==undefined?' | Target: $'+raw.target_price.toFixed(0):'')+' | Deadline: '+raw.deadline+'</div>';
+      raw.plans.forEach((pl,i)=>{
+        html+='<div class="section" style="margin-top:15px"><b>Long:</b> $'+pl.long_strike.toFixed(0)+' '+raw.option_type+' exp '+pl.long_expiry+' (DTE '+pl.long_dte+') &mdash; Cost: $'+pl.long_cost.toFixed(2)+' | Score: '+pl.score.toFixed(4)+'</div>';
+        if(!pl.short_legs||!pl.short_legs.length)return;
+        const rows=pl.short_legs.map((sl,j)=>[j+1,sl.short_expiry.slice(-5),'$'+sl.short_strike.toFixed(0),'$'+sl.gross_premium.toFixed(2),'$'+sl.buyback_cost.toFixed(2),'$'+sl.net_credit.toFixed(2),'$'+sl.long_close_value.toFixed(2),'$'+sl.break_even.toFixed(2),sl.contracts]);
+        html+=jsonTable([['Rank','right'],['Expiry'],['Strike','right'],['Premium','right'],['Buyback','right'],['Net Kept','right'],['Long Value','right'],['Break Even','right'],['Contracts','right']],rows);
+      });
+      box.innerHTML=html;
+    });
+  });
+}
+
+// ─── Init ─────────────────────────────
+renderTabs();
+TABS.filter(t=>t.id===activeTab).forEach(t=>t.build());
+</script>
+</body>
+</html>
