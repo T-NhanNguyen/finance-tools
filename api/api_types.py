@@ -309,7 +309,7 @@ class EfficiencyRequest(BaseModel):
     deadline: str = Field(description="Deadline date (YYYY-MM-DD or MM/DD/YYYY)")
     top_n: int = Field(5, description="Number of top candidates to return")
     target_price: Optional[float] = Field(None, description="Price target for expected move calculation")
-    near_date_cutoff: int = Field(30, description="DTE threshold separating near-dated from further-out")
+    near_date_cutoff: int = Field(0, description="DTE threshold separating near-dated from further-out (0=auto)")
     option_type: Literal["call", "put"] = Field("call", description="Option type: call (bullish) or put (bearish)")
 
 

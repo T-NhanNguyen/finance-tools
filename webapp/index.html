@@ -424,9 +424,9 @@ function buildDiagonal(){
           const longSym='.'+raw.ticker.toUpperCase()+optSymbol(pl.long_expiry,pl.long_strike,cp);
           const shortSym='-.'+raw.ticker.toUpperCase()+optSymbol(sl.short_expiry,sl.short_strike,cp);
           const link=osLink(strategy,raw.ticker,shortSym+','+longSym);
-          return[j+1,sl.short_expiry.slice(-5),'$'+sl.short_strike.toFixed(0),'$'+sl.gross_premium.toFixed(2),'$'+sl.buyback_cost.toFixed(2),'$'+sl.net_credit.toFixed(2),'$'+sl.long_close_value.toFixed(2),'$'+sl.break_even.toFixed(2),sl.contracts,'<a href="'+link+'" target="_blank">view</a>'];
+          return[j+1,sl.short_expiry.slice(-5),'$'+sl.short_strike.toFixed(0),'$'+sl.gross_premium.toFixed(2),'−$'+sl.buyback_cost.toFixed(2),'$'+sl.net_credit.toFixed(2),'$'+sl.long_close_value.toFixed(2),'$'+sl.break_even.toFixed(2),sl.roi_max+'%','<a href="'+link+'" target="_blank">view</a>'];
         });
-        html+=jsonTable([['Rank','right'],['Expiry'],['Strike','right'],['Premium','right'],['Buyback','right'],['Net Kept','right'],['Long Value','right'],['Break Even','right'],['Contracts','right'],['Chart','center']],rows);
+        html+=jsonTable([['Rank','right'],['Short Exp','center'],['Short Strike','right'],['Short Prem','right'],['−20% Buybk','right'],['= Net Kept','right'],['+ Long Value','right'],['Break-Even','center'],['ROI (%)','right'],['Chart','center']],rows);
       });
       box.innerHTML=html;
     });

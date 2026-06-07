@@ -864,7 +864,7 @@ def calculate_metrics_debit_spread(candidate: Dict, spot_price: float,
 # =============================================================================
 
 def compare_efficiency(ticker: str, deadline: str, top_n: int = 5,
-                       target_price: float = None, near_date_cutoff: int = 30,
+                       target_price: float = None, near_date_cutoff: int = None,
                        option_type: str = "call") -> Dict:
     """
     Compare ITM near-dated vs OTM further-out option contracts by
@@ -877,7 +877,9 @@ def compare_efficiency(ticker: str, deadline: str, top_n: int = 5,
         target_price: Optional price target. If provided, expected move =
                       abs(target_price - spot_price). Falls back to
                       calculate_expected_move() otherwise.
-        near_date_cutoff: DTE threshold separating near-dated from further-out (default 30)
+        near_date_cutoff: DTE threshold separating near-dated from further-out.
+                          If None, computed adaptively as max(45, target_dte * 0.4)
+                          so short weeklies don't dominate a long-dated thesis.
         option_type: 'call' (bullish) or 'put' (bearish) — defaults to 'call'
 
     Returns:
@@ -913,6 +915,11 @@ def compare_efficiency(ticker: str, deadline: str, top_n: int = 5,
         return {"error": f"deadline {deadline} is in the past or today. Please provide a future date."}
 
     target_dte = (deadline_dt - today).days
+
+    # Adaptive near/far cutoff: scales with thesis duration so short weeklies
+    # don't dominate a long-dated thesis. Default: max(45, 40% of target DTE).
+    if near_date_cutoff is None or near_date_cutoff <= 0:
+        near_date_cutoff = max(45, int(target_dte * 0.4))
 
     # Fetch option chain data (via GEX cache — avoids redundant yfinance calls)
     chain_data = fetch_gex_all_expirations(ticker)
@@ -1023,6 +1030,12 @@ def compare_efficiency(ticker: str, deadline: str, top_n: int = 5,
     for exp_info in filtered_expirations:
         exp_date_str = exp_info["expiration"]
         dte = exp_info["dte"]
+
+        # Skip contracts too short to realistically reach the target.
+        # Require at least 14 DTE or 15% of the thesis duration (whichever is higher).
+        min_dte = max(14, int(target_dte * 0.15))
+        if dte < min_dte:
+            continue
         strikes_data = exp_info["strikes"]
         t = dte / 365.0
         exp_spot = exp_info.get("spotPrice", spot_price)
@@ -1668,6 +1681,10 @@ def plan_diagonal_spreads(efficiency_result: Dict, top_n: int = 5, min_oi_pct: f
             # short_legs are independent alternatives (pick one), not sequential rolls
             for sl in short_legs:
                 sl["cumulative_gross_premium"] = sl["gross_premium"]
+                eff_cost = max(0.01, long_cost - sl["cumulative_gross_premium"])
+                sl["roi_max"] = round((sl["net_credit"] / eff_cost) * 100, 1)
+                stop_close = sl["long_value_at_strike"] + sl["net_credit"]
+                sl["roi_stop"] = round(((stop_close - long_cost) / eff_cost) * 100, 1) if long_cost > 0 else 0.0
 
             top_net_credit = short_legs[0]["net_credit"]
             plan_spot = gex_data.get("spotPrice", 0)
@@ -1810,8 +1827,8 @@ def run_optimizer_scanner():
     parser.add_argument(
         "--near-date-cutoff",
         type=int,
-        default=30,
-        help="DTE threshold separating near-dated from further-out (default: 30)"
+        default=0,
+        help="DTE threshold separating near-dated from further-out (default: 0 = auto)"
     )
     parser.add_argument(
         "--option-type",
