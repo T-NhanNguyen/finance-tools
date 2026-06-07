@@ -14,6 +14,7 @@ from core.data.bulk_data_loader import fetch_all_expirations, get_cached_option_
 from api.cache_manager import cache_manager
 
 from core.strategies.contract_selling_analyst import ContractSellingAnalyst
+from core.strategies.option_strike_optimizer import compare_efficiency, plan_diagonal_spreads
 from core.strategies.portfolio_margin_allocator import (
     PortfolioMarginAllocator, 
     Position, 
@@ -26,7 +27,8 @@ from .api_types import (
     GEXResponse, GEXStrikeData, IndicatorsResponse, 
     IndicatorDataPoint, OBVTrendSegment, ErrorResponse,
     ContractSellingResponse, StrikeAnalysisData, PillarScoredPoint, ActionablePillars,
-    PortfolioMarginResponse, PortfolioPositionData, TickerQueueStatus
+    PortfolioMarginResponse, PortfolioPositionData, TickerQueueStatus,
+    EfficiencyRequest, DiagonalRequest
 )
 
 
@@ -370,5 +372,75 @@ def getPortfolioSimulationData(
         import traceback
         return ErrorResponse(
             error="Portfolio simulation failed", 
+            details=f"{str(exc)}\n{traceback.format_exc()}"
+        ).model_dump()
+
+
+# ============================================================================
+# Option Strike Optimizer Handlers
+# ============================================================================
+
+def getEfficiencyData(request: EfficiencyRequest) -> Dict:
+    """
+    Run efficiency comparison and return structured JSON.
+    """
+    try:
+        result = compare_efficiency(
+            ticker=request.ticker,
+            deadline=request.deadline,
+            top_n=request.top_n,
+            target_price=request.target_price,
+            near_date_cutoff=request.near_date_cutoff,
+            option_type=request.option_type
+        )
+        if "error" in result:
+            return ErrorResponse(error=result["error"], ticker=request.ticker).model_dump()
+        return result
+    except Exception as exc:
+        import traceback
+        return ErrorResponse(
+            error="Efficiency comparison failed",
+            ticker=request.ticker,
+            details=f"{str(exc)}\n{traceback.format_exc()}"
+        ).model_dump()
+
+
+def getDiagonalData(request: DiagonalRequest) -> Dict:
+    """
+    Run diagonal spread planning and return structured JSON (plans only, no efficiency tables).
+    """
+    try:
+        # Step 1: efficiency comparison as input
+        efficiency = compare_efficiency(
+            ticker=request.ticker,
+            deadline=request.deadline,
+            top_n=request.top_n,
+            target_price=request.target_price,
+            option_type=request.option_type
+        )
+        if "error" in efficiency:
+            return ErrorResponse(error=efficiency["error"], ticker=request.ticker).model_dump()
+
+        # Step 2: diagonal plans from top candidates
+        diagonal_plans = plan_diagonal_spreads(
+            efficiency,
+            top_n=request.top_n,
+            min_oi_pct=request.min_oi_pct,
+            option_type=request.option_type
+        )
+
+        return {
+            "ticker": request.ticker,
+            "option_type": request.option_type,
+            "deadline": request.deadline,
+            "target_price": request.target_price,
+            "spot_price": efficiency.get("spot_price", 0),
+            "plans": diagonal_plans
+        }
+    except Exception as exc:
+        import traceback
+        return ErrorResponse(
+            error="Diagonal spread planning failed",
+            ticker=request.ticker,
             details=f"{str(exc)}\n{traceback.format_exc()}"
         ).model_dump()

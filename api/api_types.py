@@ -133,6 +133,9 @@ class StrikeAnalysisData(BaseModel):
     eff_cost_basis: float = Field(description="Effective cost basis if assigned")
     predicted_p_call: float = Field(description="Predicted call/put premium proxy for repairs")
     capital_deployed: float = Field(description="Cash required for position size")
+    open_interest: float = Field(0.0, description="Total open interest at this strike (contracts)")
+    volume: float = Field(0.0, description="Trading volume at this strike")
+    gex_magnitude: float = Field(0.0, description="Absolute GEX magnitude value at this strike")
 
 class PillarScoredPoint(BaseModel):
     """Ranked pillar prospects formatted for display summaries"""
@@ -294,3 +297,27 @@ class BatchAnalysisRequest(BaseModel):
     expiration: str = Field(description="Target expiration date (YYYY-MM-DD)")
     strategy: Optional[Literal["CSP", "CC"]] = Field("CSP", description="Strategy type: CSP or CC")
     cash_equity: Optional[float] = Field(None, description="Available capital override")
+
+
+# ============================================================================
+# Option Strike Optimizer Request/Response Models
+# ============================================================================
+
+class EfficiencyRequest(BaseModel):
+    """Request parameters for efficiency comparison analysis"""
+    ticker: str = Field(description="Stock ticker symbol")
+    deadline: str = Field(description="Deadline date (YYYY-MM-DD or MM/DD/YYYY)")
+    top_n: int = Field(5, description="Number of top candidates to return")
+    target_price: Optional[float] = Field(None, description="Price target for expected move calculation")
+    near_date_cutoff: int = Field(30, description="DTE threshold separating near-dated from further-out")
+    option_type: Literal["call", "put"] = Field("call", description="Option type: call (bullish) or put (bearish)")
+
+
+class DiagonalRequest(BaseModel):
+    """Request parameters for diagonal spread planning"""
+    ticker: str = Field(description="Stock ticker symbol")
+    deadline: str = Field(description="Deadline date (YYYY-MM-DD or MM/DD/YYYY)")
+    top_n: int = Field(5, description="Number of top candidates to evaluate")
+    target_price: Optional[float] = Field(None, description="Price target for expected move calculation")
+    min_oi_pct: float = Field(0.0, description="Minimum open interest as %% of max OI for long leg selection")
+    option_type: Literal["call", "put"] = Field("call", description="Option type: call (bullish) or put (bearish)")

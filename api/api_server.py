@@ -11,11 +11,13 @@ import os
 from .api_types import (
     GEXRequest, IndicatorsRequest, GEXResponse, IndicatorsResponse, ErrorResponse,
     ContractSellingRequest, ContractSellingResponse, PortfolioSimulationRequest, 
-    PortfolioMarginResponse, QueueTickersRequest, BatchAnalysisRequest
+    PortfolioMarginResponse, QueueTickersRequest, BatchAnalysisRequest,
+    EfficiencyRequest, DiagonalRequest
 )
 from .api_handlers import (
     getGEXData, getIndicatorsData, getContractSellingData, 
-    getPortfolioSimulationData, queueTickers, getOptionChain, batchAnalyzeContracts
+    getPortfolioSimulationData, queueTickers, getOptionChain, batchAnalyzeContracts,
+    getEfficiencyData, getDiagonalData
 )
 
 # Security Configuration
@@ -216,6 +218,34 @@ async def simulate_portfolio_margin(request: PortfolioSimulationRequest):
         request.expiration,
         request.cash_equity
     )
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+# ============================================================================
+# Option Strike Optimizer Endpoints
+# ============================================================================
+
+@app.post("/api/optimize/efficiency", dependencies=api_dependencies)
+async def optimize_efficiency(request: EfficiencyRequest):
+    """
+    Run efficiency comparison — find optimal option strikes for a ticker.
+    Returns ranked candidates with cost-to-cover, theta-ROI, and expected P&L.
+    """
+    result = getEfficiencyData(request)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+@app.post("/api/optimize/diagonal", dependencies=api_dependencies)
+async def optimize_diagonal(request: DiagonalRequest):
+    """
+    Run diagonal spread planning — build PMCC-style diagonal plans from top candidates.
+    Returns long leg candidates each with top-5 short leg options ranked by premium.
+    """
+    result = getDiagonalData(request)
     if "error" in result:
         raise HTTPException(status_code=400, detail=result)
     return result
