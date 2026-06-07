@@ -29,6 +29,7 @@ tr:hover{background:#e0e8f0}
 .right{text-align:right}
 .center{text-align:center}
 .section{margin:12px 0}
+.desc{font-size:11px;color:#555;margin:6px 0 12px 0;padding:6px 10px;background:#f8f8f8;border:1px solid #ddd;line-height:1.5}
 .error{color:#c00;font-weight:700}
 .chart-container{width:100%;max-width:800px;height:350px;margin:12px 0}
 .copy-btn{float:right;font-size:10px;background:#e8e8e8;border:1px solid #999;padding:2px 10px;cursor:pointer;margin-left:6px}
@@ -90,12 +91,21 @@ function makeForm(id,fields,action){
     const l=document.createElement('label');l.textContent=f.label+':';
     const inp=f.tag==='select'?(()=>{const s=document.createElement('select');f.options.forEach(o=>{const opt=document.createElement('option');opt.value=o;opt.textContent=o;s.appendChild(opt)});return s})():(()=>{const i=document.createElement('input');i.type='text';if(f.value)i.value=f.value;if(f.placeholder)i.placeholder=f.placeholder;return i})();
     inp.id=id+'-'+f.key;
+    // Restore saved value
+    const saved=localStorage.getItem('fin_'+id+'_'+f.key);
+    if(saved!==null)inp.value=saved;
+    // Save on change
+    inp.onchange=function(){localStorage.setItem('fin_'+id+'_'+f.key,inp.value);};
     r.appendChild(l);r.appendChild(inp);
   });
   const btn=document.createElement('button');btn.className='btn';btn.textContent='Go';
   const sp=document.createElement('span');sp.className='spinner';sp.textContent=' loading...';
   r.appendChild(btn);r.appendChild(sp);c.appendChild(r);
-  btn.onclick=action;
+  btn.onclick=function(){
+    // Save all fields before running
+    fields.forEach(f=>{const e=document.getElementById(id+'-'+f.key);if(e)localStorage.setItem('fin_'+id+'_'+f.key,e.value);});
+    action();
+  };
   const tb=document.createElement('div');tb.className='toolbar';
   const copy=document.createElement('button');copy.className='copy-btn';copy.textContent='Copy JSON';
   copy.onclick=function(){
@@ -112,6 +122,16 @@ function jsonTable(headers,rows){
   let h=headers.map(h=>'<th'+(h[1]?' class="'+h[1]+'"':'')+'>'+h[0]+'</th>').join('');
   let b=rows.map(r=>'<tr>'+r.map((c,i)=>'<td'+(headers[i]&&headers[i][1]?' class="'+headers[i][1]+'"':'')+'>'+c+'</td>').join('')+'</tr>').join('');
   return'<table><tr>'+h+'</tr>'+b+'</table>';
+}
+
+function optSymbol(dateStr,strike,cp){
+  const d=dateStr.replace(/-/g,'').slice(2);
+  const s=String(Math.round(strike));
+  return d+cp+s;
+}
+
+function osLink(strategy,ticker,legs){
+  return 'https://optionstrat.com/build/'+strategy+'/'+ticker.toUpperCase()+'/'+legs;
 }
 
 // ─── GEX ──────────────────────────────
@@ -282,29 +302,42 @@ function buildIndicators(){
 function buildCS(){
   const c=document.getElementById('tab-cs');
   if(c.dataset.built)return;c.dataset.built=1;
-  c.innerHTML='<h2>Contract Selling Analysis</h2>';
+  c.innerHTML='<h2>Contract Selling Analysis</h2><div class="desc">The results from this table compare strike prices across the desired option chain on the desired ticker(s). Use this when you want to compare and analyze premiums across tickers before committing to selling contracts.</div>';
   makeForm('tab-cs',[
-    {key:'ticker',label:'Ticker',value:'ASTS'},
+    {key:'ticker',label:'Ticker(s)',value:'ASTS,MRVL'},
     {key:'strategy',label:'Strat',tag:'select',options:['CSP','CC']},
     {key:'expiration',label:'Exp',placeholder:'nearest'},
   ],()=>{
-    const t=document.getElementById('tab-cs-ticker').value.trim();
+    const tickers=document.getElementById('tab-cs-ticker').value.split(',').map(s=>s.trim().toUpperCase()).filter(Boolean);
     const s=document.getElementById('tab-cs-strategy').value;
     const e=document.getElementById('tab-cs-expiration').value.trim();
-    fetchData('tab-cs','/api/contract-selling',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},headers()),body:JSON.stringify({ticker:t,strategy:s,expiration:e||null})},(box,raw)=>{
-      if(raw.error){box.innerHTML='<div class="error">'+raw.error+'</div>';return;}
-      let html='<div class="section">Spot: <b>$'+raw.spot_price.toFixed(2)+'</b> | Cap: $'+(raw.effective_capital/1e3).toFixed(0)+'K</div>';
-      for(const[engine,pillars] of Object.entries(raw.pillars||{})){
-        if(!pillars||!pillars.length)continue;
-        html+='<div class="section"><b>'+engine.replace(/_/g,' ')+'</b></div>';
-        const rows=pillars.map(p=>{
-          const totalCredit=100*p.Contracts*p.Premium_Raw;
-          return[p.Rank,p.Strike.toFixed(2),p.Contracts,'$'+p.Premium_Raw.toFixed(2),'$'+totalCredit.toFixed(2),p.Trade_ROI,p.Post_Tax_ROI,p.Pillar_Score.toFixed(4),p.WTZ_Weeks.toFixed(1)];
-        });
-        html+=jsonTable([['Rank','right'],['Strike','right'],['Contracts','right'],['Premium','right'],['Total Credit','right'],['ROI'],['Post-Tax ROI'],['Score','right'],['Weeks To Zero','right']],rows);
-      }
-      box.innerHTML=html;
-    });
+    const btn=document.querySelector('#tab-cs .btn');
+    const sp=document.querySelector('#tab-cs .spinner');
+    const box=document.querySelector('#tab-cs .result');
+    btn.disabled=true;sp.classList.add('visible');
+    Promise.all(tickers.map(tk=>
+      fetch('/api/contract-selling',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},headers()),body:JSON.stringify({ticker:tk,strategy:s,expiration:e||null})}).then(r=>r.json()).then(d=>({tk,data:d}))
+    )).then(results=>{
+      let allHtml='';
+      results.forEach(r=>{
+        const raw=r.data;
+        if(raw.error){allHtml+='<div class="error">'+r.tk+': '+raw.error+'</div>';return;}
+        allHtml+='<div class="section" style="margin-top:10px"><b>'+r.tk+'</b> &mdash; Spot: <b>$'+raw.spot_price.toFixed(2)+'</b> | Cap: $'+(raw.effective_capital/1e3).toFixed(0)+'K</div>';
+        for(const[engine,pillars] of Object.entries(raw.pillars||{})){
+          if(!pillars||!pillars.length)continue;
+          allHtml+='<div style="margin-left:10px"><i>'+engine.replace(/_/g,' ')+'</i></div>';
+          const rows=pillars.map(p=>{
+            const totalCredit=100*p.Contracts*p.Premium_Raw;
+            return[p.Rank,p.Strike.toFixed(2),p.Contracts,'$'+p.Premium_Raw.toFixed(2),'$'+totalCredit.toFixed(2),p.Trade_ROI,p.Post_Tax_ROI,p.Pillar_Score.toFixed(4),p.WTZ_Weeks.toFixed(1)];
+          });
+          allHtml+=jsonTable([['Rank','right'],['Strike','right'],['Contracts','right'],['Premium','right'],['Total Credit','right'],['ROI'],['Post-Tax ROI'],['Score','right'],['Weeks To Zero','right']],rows);
+        }
+      });
+      box.dataset.raw=JSON.stringify(results.map(r=>({ticker:r.tk,...r.data})));
+      box.innerHTML=allHtml;box.style.display='block';
+    }).catch(e=>{
+      box.innerHTML='<div class="error">Error: '+e.message+'</div>';box.style.display='block';
+    }).finally(()=>{btn.disabled=false;sp.classList.remove('visible');});
   });
 }
 
@@ -312,7 +345,7 @@ function buildCS(){
 function buildPortfolio(){
   const c=document.getElementById('tab-portfolio');
   if(c.dataset.built)return;c.dataset.built=1;
-  c.innerHTML='<h2>Diversifying Contract-Selling Allocation</h2>';
+  c.innerHTML='<h2>Diversifying Contract-Selling Allocation</h2><div class="desc">This tool is intended for larger accounts encountering liquidity issues. The tool takes the given tickers and calculates how you should partition your buying power across the tickers by following a heuristic algorithm.</div>';
   makeForm('tab-portfolio',[
     {key:'tickers',label:'Tickers',value:'ASTS,MRVL'},
     {key:'strategy',label:'Strat',tag:'select',options:['CSP','CC']},
@@ -333,7 +366,7 @@ function buildPortfolio(){
 function buildEfficiency(){
   const c=document.getElementById('tab-efficiency');
   if(c.dataset.built)return;c.dataset.built=1;
-  c.innerHTML='<h2>Efficiency Comparison</h2>';
+  c.innerHTML='<h2>Efficiency Comparison</h2><div class="desc">This tool is intended to establish a leveraged position for the direction of the stock. Rather than paying premium bloat for further-dated OTM calls, we utilize ITM near-dated contracts to yield the same return for less capital.</div>';
   makeForm('tab-efficiency',[
     {key:'ticker',label:'Ticker',value:'MRVL'},
     {key:'deadline',label:'Deadline',value:'09/18/2026'},
@@ -350,8 +383,13 @@ function buildEfficiency(){
       if(raw.warnings&&raw.warnings.length)html+='<div class="error">'+raw.warnings.join('<br>')+'</div>';
       const cand=raw.candidates||[];
       if(cand.length){
-        const rows=cand.map(c=>[c.rank,c.category,c.expiration.slice(-5),c.dte,'$'+c.strike.toFixed(0),'$'+c.effective_price.toFixed(2),c.cost_to_cover!==null?c.cost_to_cover.toFixed(2)+'x':'-',c.theta_roi!==null?c.theta_roi.toFixed(2)+'x':'-','$'+c.expected_pnl.toFixed(2),c.delta.toFixed(3),c.combined_score.toFixed(4)]);
-        html+=jsonTable([['Rank','right'],['Category'],['Expiry'],['DTE','right'],['Strike','right'],['Price','right'],['Cost to Cover','right'],['Theta ROI','right'],['Exp P&L','right'],['Delta','right'],['Score','right']],rows);
+        const rows=cand.map(c=>{
+          const cp=c.option_type==='call'?'C':'P';
+          const sym='.'+raw.ticker.toUpperCase()+optSymbol(c.expiration,c.strike,cp);
+          const link=osLink('long-'+c.option_type,raw.ticker,sym);
+          return[c.rank,c.category,c.expiration.slice(-5),c.dte,'$'+c.strike.toFixed(0),'$'+c.effective_price.toFixed(2),c.cost_to_cover!==null?c.cost_to_cover.toFixed(2)+'x':'-',c.theta_roi!==null?c.theta_roi.toFixed(2)+'x':'-','$'+c.expected_pnl.toFixed(2),c.delta.toFixed(3),c.combined_score.toFixed(4),'<a href="'+link+'" target="_blank">view</a>'];
+        });
+        html+=jsonTable([['Rank','right'],['Category'],['Expiry'],['DTE','right'],['Strike','right'],['Price','right'],['Cost to Cover','right'],['Theta ROI','right'],['Exp P&L','right'],['Delta','right'],['Score','right'],['Chart','center']],rows);
       }
       box.innerHTML=html;
     });
@@ -362,7 +400,7 @@ function buildEfficiency(){
 function buildDiagonal(){
   const c=document.getElementById('tab-diagonal');
   if(c.dataset.built)return;c.dataset.built=1;
-  c.innerHTML='<h2>Diagonal Spread Planner</h2>';
+  c.innerHTML='<h2>Diagonal Spread Planner</h2><div class="desc">This is a scanner that leverages the Efficiency Tool to convert the single-leg position into a dirt-cheap Poor Man\'s Covered Call/Put. I call it the \'Poorer than dirt Covered Call\'. It actually has a lot of potential for hedging against your long position if you\'re utilizing this to play puts. The diagonal setup is intended to sell weeklies against your long leg so that it not only can be used for income, but also to lower the cost basis on your long leg if the move is taking longer to play out.</div>';
   makeForm('tab-diagonal',[
     {key:'ticker',label:'Ticker',value:'ASTS'},
     {key:'deadline',label:'Deadline',value:'09/18/2026'},
@@ -380,8 +418,15 @@ function buildDiagonal(){
       raw.plans.forEach((pl,i)=>{
         html+='<div class="section" style="margin-top:15px"><b>Long:</b> $'+pl.long_strike.toFixed(0)+' '+raw.option_type+' exp '+pl.long_expiry+' (DTE '+pl.long_dte+') &mdash; Cost: $'+pl.long_cost.toFixed(2)+' | Score: '+pl.score.toFixed(4)+'</div>';
         if(!pl.short_legs||!pl.short_legs.length)return;
-        const rows=pl.short_legs.map((sl,j)=>[j+1,sl.short_expiry.slice(-5),'$'+sl.short_strike.toFixed(0),'$'+sl.gross_premium.toFixed(2),'$'+sl.buyback_cost.toFixed(2),'$'+sl.net_credit.toFixed(2),'$'+sl.long_close_value.toFixed(2),'$'+sl.break_even.toFixed(2),sl.contracts]);
-        html+=jsonTable([['Rank','right'],['Expiry'],['Strike','right'],['Premium','right'],['Buyback','right'],['Net Kept','right'],['Long Value','right'],['Break Even','right'],['Contracts','right']],rows);
+        const cp=raw.option_type==='call'?'C':'P';
+        const strategy='diagonal-'+raw.option_type+'-spread';
+        const rows=pl.short_legs.map((sl,j)=>{
+          const longSym='.'+raw.ticker.toUpperCase()+optSymbol(pl.long_expiry,pl.long_strike,cp);
+          const shortSym='-.'+raw.ticker.toUpperCase()+optSymbol(sl.short_expiry,sl.short_strike,cp);
+          const link=osLink(strategy,raw.ticker,shortSym+','+longSym);
+          return[j+1,sl.short_expiry.slice(-5),'$'+sl.short_strike.toFixed(0),'$'+sl.gross_premium.toFixed(2),'$'+sl.buyback_cost.toFixed(2),'$'+sl.net_credit.toFixed(2),'$'+sl.long_close_value.toFixed(2),'$'+sl.break_even.toFixed(2),sl.contracts,'<a href="'+link+'" target="_blank">view</a>'];
+        });
+        html+=jsonTable([['Rank','right'],['Expiry'],['Strike','right'],['Premium','right'],['Buyback','right'],['Net Kept','right'],['Long Value','right'],['Break Even','right'],['Contracts','right'],['Chart','center']],rows);
       });
       box.innerHTML=html;
     });
