@@ -391,7 +391,8 @@ def getEfficiencyData(request: EfficiencyRequest) -> Dict:
             top_n=request.top_n,
             target_price=request.target_price,
             near_date_cutoff=request.near_date_cutoff,
-            option_type=request.option_type
+            option_type=request.option_type,
+            skip_phantom_filter=request.skip_phantom_filter
         )
         if "error" in result:
             return ErrorResponse(error=result["error"], ticker=request.ticker).model_dump()
@@ -416,7 +417,8 @@ def getDiagonalData(request: DiagonalRequest) -> Dict:
             deadline=request.deadline,
             top_n=request.top_n,
             target_price=request.target_price,
-            option_type=request.option_type
+            option_type=request.option_type,
+            skip_phantom_filter=request.skip_phantom_filter
         )
         if "error" in efficiency:
             return ErrorResponse(error=efficiency["error"], ticker=request.ticker).model_dump()

@@ -74,7 +74,11 @@ class ContractSellingAnalyst:
         maintenance_req: Optional[float] = None,
         ticker: str = "",
         custom_cost_basis: Optional[float] = None,
-        custom_shares: Optional[int] = None
+        custom_shares: Optional[int] = None,
+        gex_call_value: float = 0,
+        gex_put_value: float = 0,
+        call_oi_value: float = 0,
+        put_oi_value: float = 0
     ) -> Dict:
         """
         Function 1: The 'Data Scientist'
@@ -95,6 +99,10 @@ class ContractSellingAnalyst:
             cash_equity=self.cash_equity,
             init_req=init_req,
             maint_req=maint_req,
+            gex_call_value=gex_call_value,
+            gex_put_value=gex_put_value,
+            call_oi_value=call_oi_value,
+            put_oi_value=put_oi_value,
             ticker=ticker,
             custom_cost_basis=custom_cost_basis,
             custom_shares=custom_shares
@@ -142,6 +150,8 @@ class ContractSellingAnalyst:
             "margin_call_floor": round(margin_call_floor, 2),
             "safety_margin_pct": round(safety_margin, 2),
             "structural_score": structural_score,
+            "call_structural_score": metrics["call_structural_score"],
+            "put_structural_score": metrics["put_structural_score"],
             "efficiency_score": round(efficiency_score, 4),
             "capital_efficiency_ratio": round(capital_efficiency_ratio, 4),
             "weeks_to_zero": round(weeks_to_zero, 1),
@@ -153,11 +163,13 @@ class ContractSellingAnalyst:
             "gex_magnitude": abs(gex_value),
         }
 
-    def get_actionable_pillars(self, analyzed_list: List[Dict], engine_mode: str = "BOTH") -> Dict[str, List[Dict]]:
+    def get_actionable_pillars(self, analyzed_list: List[Dict], engine_mode: str = "BOTH", strategy_type: str = "") -> Dict[str, List[Dict]]:
         """
         Function 2: The 'Trader'
         Filters noise and ranks results into bifurcated Wheel & Cash mandates.
         Tiered classification based on moneyness.
+        When strategy_type is provided ("CC" or "CSP"), uses per-side GEX scores
+        (call_structural_score for CC resistance, put_structural_score for CSP support).
         """
         if not analyzed_list:
             return {"Top_Wheel_Engine": [], "Top_Cash_Engine": []}
@@ -180,7 +192,14 @@ class ContractSellingAnalyst:
         analyzed_list = filtered_list
 
         # 1. Normalize variables across the list
-        max_density = max([x.get('structural_score', 0) for x in analyzed_list]) or 1.0
+        # Use per-side GEX density when strategy is known
+        if strategy_type.upper() == "CC":
+            density_key = "call_structural_score"
+        elif strategy_type.upper() == "CSP":
+            density_key = "put_structural_score"
+        else:
+            density_key = "structural_score"
+        max_density = max([x.get(density_key, 0) for x in analyzed_list]) or 1.0
         max_cap_eff = max([x.get('capital_efficiency_ratio', 0) for x in analyzed_list]) or 1.0
         
         floors = [x.get('margin_call_floor', 0) for x in analyzed_list]
@@ -189,7 +208,7 @@ class ContractSellingAnalyst:
         floor_range = max_floor - min_floor if max_floor != min_floor else 1.0
 
         for x in analyzed_list:
-            norm_density = x.get('structural_score', 0) / max_density
+            norm_density = x.get(density_key, 0) / max_density
             norm_cap_eff = x.get('capital_efficiency_ratio', 0) / max_cap_eff
             norm_floor = (max_floor - x.get('margin_call_floor', 0)) / floor_range
             
@@ -235,7 +254,9 @@ class ContractSellingAnalyst:
                        "Premium_Raw": p.get('premium', 0),
                        "Open_Interest": p.get('open_interest', 0),
                        "Volume": p.get('volume', 0),
-                       "GEX_Magnitude": p.get('gex_magnitude', 0)
+                       "GEX_Magnitude": p.get('gex_magnitude', 0),
+                       "Call_GEX_Density": p.get('call_structural_score', 0),
+                       "Put_GEX_Density": p.get('put_structural_score', 0)
                   })
              return pillars_scored
 
@@ -303,7 +324,11 @@ class ContractSellingAnalyst:
                      continue
                  
              gex_raw = s_data.get('gexMillions', 0) * 1e6
+             gex_call_raw = s_data.get('callGEXMillions', 0) * 1e6
+             gex_put_raw = s_data.get('putGEXMillions', 0) * 1e6
              oi_raw = s_data.get('openInterestThousands', 0) * 1e3
+             call_oi_raw = s_data.get('callOI', 0) * 1e3
+             put_oi_raw = s_data.get('putOI', 0) * 1e3
              volume_raw = s_data.get('volume', 0)  # Try to get volume from chain data
              days_to_expiry = chain_data.get("daysToExpiration", 30)
              
@@ -320,14 +345,18 @@ class ContractSellingAnalyst:
                  maintenance_req=maint_req,
                  ticker=ticker,
                  custom_cost_basis=custom_cost_basis,
-                 custom_shares=custom_shares
+                 custom_shares=custom_shares,
+                 gex_call_value=gex_call_raw,
+                 gex_put_value=gex_put_raw,
+                 call_oi_value=call_oi_raw,
+                 put_oi_value=put_oi_raw
              )
              # Update volume if available from chain data
              if volume_raw > 0:
                  res["volume"] = volume_raw
              analyzed_results.append(res)
         
-        pillars = self.get_actionable_pillars(analyzed_results, engine_mode=engine_mode)
+        pillars = self.get_actionable_pillars(analyzed_results, engine_mode=engine_mode, strategy_type=strategy_type)
         
         return {
              "ticker": ticker,

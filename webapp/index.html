@@ -30,6 +30,8 @@ tr:hover{background:#e0e8f0}
 .center{text-align:center}
 .section{margin:12px 0}
 .desc{font-size:11px;color:#555;margin:6px 0 12px 0;padding:6px 10px;background:#f8f8f8;border:1px solid #ddd;line-height:1.5}
+.chk{font-size:11px;cursor:pointer;white-space:nowrap;padding:2px 6px;user-select:none}
+.chk input{vertical-align:middle;margin-right:3px}
 .error{color:#c00;font-weight:700}
 .chart-container{width:100%;max-width:800px;height:350px;margin:12px 0}
 .copy-btn{float:right;font-size:10px;background:#e8e8e8;border:1px solid #999;padding:2px 10px;cursor:pointer;margin-left:6px}
@@ -89,13 +91,13 @@ function makeForm(id,fields,action){
   const r=document.createElement('div');r.className='form-row';
   fields.forEach(f=>{
     const l=document.createElement('label');l.textContent=f.label+':';
-    const inp=f.tag==='select'?(()=>{const s=document.createElement('select');f.options.forEach(o=>{const opt=document.createElement('option');opt.value=o;opt.textContent=o;s.appendChild(opt)});return s})():(()=>{const i=document.createElement('input');i.type='text';if(f.value)i.value=f.value;if(f.placeholder)i.placeholder=f.placeholder;return i})();
-    inp.id=id+'-'+f.key;
+    const inp=f.tag==='select'?(()=>{const s=document.createElement('select');f.options.forEach(o=>{const opt=document.createElement('option');opt.value=o;opt.textContent=o;s.appendChild(opt)});return s})():f.tag==='checkbox'?(()=>{const lb=document.createElement('label');lb.className='chk';const cb=document.createElement('input');cb.type='checkbox';if(f.checked)cb.checked=true;cb.id=id+'-'+f.key;lb.appendChild(cb);lb.appendChild(document.createTextNode(' '+f.label));return lb})():(()=>{const i=document.createElement('input');i.type='text';if(f.value)i.value=f.value;if(f.placeholder)i.placeholder=f.placeholder;return i})();
+    if(f.tag!=='checkbox'){inp.id=id+'-'+f.key;}
     // Restore saved value
     const saved=localStorage.getItem('fin_'+id+'_'+f.key);
-    if(saved!==null)inp.value=saved;
+    if(saved!==null){if(f.tag==='checkbox'){inp.querySelector('input').checked=saved==='true';}else{inp.value=saved;}}
     // Save on change
-    inp.onchange=function(){localStorage.setItem('fin_'+id+'_'+f.key,inp.value);};
+    if(f.tag==='checkbox'){const cb=inp.querySelector('input');cb.onchange=function(){localStorage.setItem('fin_'+id+'_'+f.key,cb.checked);};}else{inp.onchange=function(){localStorage.setItem('fin_'+id+'_'+f.key,inp.value);};}
     r.appendChild(l);r.appendChild(inp);
   });
   const btn=document.createElement('button');btn.className='btn';btn.textContent='Go';
@@ -103,7 +105,7 @@ function makeForm(id,fields,action){
   r.appendChild(btn);r.appendChild(sp);c.appendChild(r);
   btn.onclick=function(){
     // Save all fields before running
-    fields.forEach(f=>{const e=document.getElementById(id+'-'+f.key);if(e)localStorage.setItem('fin_'+id+'_'+f.key,e.value);});
+    fields.forEach(f=>{const e=document.getElementById(id+'-'+f.key);if(e){if(f.tag==='checkbox'){localStorage.setItem('fin_'+id+'_'+f.key,e.checked);}else{localStorage.setItem('fin_'+id+'_'+f.key,e.value);}}});
     action();
   };
   const tb=document.createElement('div');tb.className='toolbar';
@@ -159,9 +161,8 @@ function buildGex(){
       Object.values(charts).forEach(c=>{try{c.destroy();}catch(e){}});
 
       const labels=strikes.map(s=>s.strike.toFixed(0));
-      const gexVals=strikes.map(s=>s.gexMillions);
-      const colors=strikes.map(s=>s.gexMillions>=0?'rgba(0,153,51,0.7)':'rgba(204,0,0,0.7)');
-      const borderColors=strikes.map(s=>s.gexMillions>=0?'rgba(0,153,51,1)':'rgba(204,0,0,1)');
+      const callVals=strikes.map(s=>+(s.callGEXMillions||0).toFixed(4));
+      const putVals=strikes.map(s=>-+(s.putGEXMillions||0).toFixed(4));
 
       // Find ATM index for annotation
       const atmIdx=strikes.reduce((best,s,i)=>Math.abs(s.strike-raw.spotPrice)<Math.abs(strikes[best].strike-raw.spotPrice)?i:best,0);
@@ -190,25 +191,36 @@ function buildGex(){
       }};
 
       charts.gex=new Chart(document.getElementById('chart-gex'),{
-        type:'bar',data:{labels,datasets:[{label:'GEX ($M)',data:gexVals,backgroundColor:colors,borderColor:borderColors,borderWidth:0.5}]},
+        type:'bar',
+        data:{
+          labels,
+          datasets:[
+            {label:'Call GEX ($M)',data:callVals,backgroundColor:'rgba(0,153,51,0.7)',borderColor:'rgba(0,153,51,1)',borderWidth:0.5},
+            {label:'Put GEX ($M)',data:putVals,backgroundColor:'rgba(204,0,0,0.7)',borderColor:'rgba(204,0,0,1)',borderWidth:0.5}
+          ]
+        },
         plugins:[spotLine],
         options:{
           responsive:true,maintainAspectRatio:false,
-          plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>'$'+ctx.parsed.y.toFixed(4)+'M'}}},
+          plugins:{
+            legend:{display:true,position:'top',labels:{boxWidth:12,font:{size:10}}},
+            tooltip:{callbacks:{label:ctx=>ctx.dataset.label+': '+Math.abs(ctx.parsed.y).toFixed(4)+'M'}}
+          },
           scales:{
             x:{ticks:{font:{size:8},maxRotation:90,autoSkip:true,maxTicksLimit:40},grid:{display:false}},
-            y:{ticks:{font:{size:9},callback:v=>v.toFixed(2)+'M'},grid:{color:'#ddd'}}
+            y:{ticks:{font:{size:9},callback:v=>Math.abs(v).toFixed(2)+'M'},grid:{color:'#ddd'}}
           }
         }
       });
 
+      //
       // Table below chart — append via DOM, not innerHTML (preserves canvas)
       const tableDiv=document.createElement('div');
       const rows=strikes.map(s=>{
-        const gc=s.gexMillions>=0?'green':'red';
-        return['$'+s.strike.toFixed(2),'<span style="color:'+gc+'">'+s.gexMillions.toFixed(4)+'</span>',s.openInterestThousands.toFixed(2),s.callOI.toFixed(0),s.putOI.toFixed(0),(s.callIV*100).toFixed(1)+'%',(s.putIV*100).toFixed(1)+'%'];
+        const gc=s.callGEXMillions>=s.putGEXMillions?'green':'red';
+        return['$'+s.strike.toFixed(2),'<span style="color:'+gc+'">'+s.gexMillions.toFixed(4)+'</span>',(s.callGEXMillions||0).toFixed(4),(s.putGEXMillions||0).toFixed(4),s.openInterestThousands.toFixed(2),s.callOI.toFixed(0),s.putOI.toFixed(0),(s.callIV*100).toFixed(1)+'%',(s.putIV*100).toFixed(1)+'%'];
       });
-      tableDiv.innerHTML=jsonTable([['Strike','right'],['GEX ($M)','right'],['OI (K)','right'],['Call OI','right'],['Put OI','right'],['Call IV','right'],['Put IV','right']],rows);
+      tableDiv.innerHTML=jsonTable([['Strike','right'],['Net GEX ($M)','right'],['Call GEX ($M)','right'],['Put GEX ($M)','right'],['OI (K)','right'],['Call OI','right'],['Put OI','right'],['Call IV','right'],['Put IV','right']],rows);
       wrapper.appendChild(tableDiv);
     });
   });
@@ -372,12 +384,14 @@ function buildEfficiency(){
     {key:'deadline',label:'Deadline',value:'09/18/2026'},
     {key:'target_price',label:'Target',value:'300'},
     {key:'otype',label:'Type',tag:'select',options:['call','put']},
+    {key:'nofilter',label:'Phantom Filter',tag:'checkbox'},
   ],()=>{
     const t=document.getElementById('tab-efficiency-ticker').value.trim();
     const d=document.getElementById('tab-efficiency-deadline').value.trim();
     const p=parseFloat(document.getElementById('tab-efficiency-target_price').value)||null;
     const o=document.getElementById('tab-efficiency-otype').value;
-    fetchData('tab-efficiency','/api/optimize/efficiency',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},headers()),body:JSON.stringify({ticker:t,deadline:d,target_price:p,option_type:o})},(box,raw)=>{
+    const nf=document.getElementById('tab-efficiency-nofilter').checked;
+    fetchData('tab-efficiency','/api/optimize/efficiency',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},headers()),body:JSON.stringify({ticker:t,deadline:d,target_price:p,option_type:o,skip_phantom_filter:nf})},(box,raw)=>{
       if(raw.error){box.innerHTML='<div class="error">'+raw.error+'</div>';return;}
       let html='<div class="section">Spot: <b>$'+raw.spot_price.toFixed(2)+'</b> | Target DTE: '+raw.target_dte+'d | Exp Move: $'+raw.expected_move.toFixed(2)+' ('+raw.expected_move_pct.toFixed(1)+'%)</div>';
       if(raw.warnings&&raw.warnings.length)html+='<div class="error">'+raw.warnings.join('<br>')+'</div>';
@@ -406,12 +420,14 @@ function buildDiagonal(){
     {key:'deadline',label:'Deadline',value:'09/18/2026'},
     {key:'target_price',label:'Target',value:'100'},
     {key:'otype',label:'Type',tag:'select',options:['call','put']},
+    {key:'nofilter',label:'Phantom',tag:'checkbox'},
   ],()=>{
     const t=document.getElementById('tab-diagonal-ticker').value.trim();
     const d=document.getElementById('tab-diagonal-deadline').value.trim();
     const p=parseFloat(document.getElementById('tab-diagonal-target_price').value)||null;
     const o=document.getElementById('tab-diagonal-otype').value;
-    fetchData('tab-diagonal','/api/optimize/diagonal',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},headers()),body:JSON.stringify({ticker:t,deadline:d,target_price:p,option_type:o})},(box,raw)=>{
+    const nf=document.getElementById('tab-diagonal-nofilter').checked;
+    fetchData('tab-diagonal','/api/optimize/diagonal',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},headers()),body:JSON.stringify({ticker:t,deadline:d,target_price:p,option_type:o,skip_phantom_filter:nf})},(box,raw)=>{
       if(raw.error){box.innerHTML='<div class="error">'+raw.error+'</div>';return;}
       if(!raw.plans||!raw.plans.length){box.innerHTML='<div class="error">No plans found.</div>';return;}
       let html='<div class="section">'+raw.ticker+' &mdash; '+raw.option_type+' | Spot: <b>$'+raw.spot_price.toFixed(2)+'</b>'+(raw.target_price!==undefined?' | Target: $'+raw.target_price.toFixed(0):'')+' | Deadline: '+raw.deadline+'</div>';

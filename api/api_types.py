@@ -16,6 +16,8 @@ class GEXStrikeData(BaseModel):
     """Single strike price data point for GEX visualization"""
     strike: float = Field(description="Option strike price")
     gexMillions: float = Field(description="Gamma exposure in millions of dollars")
+    callGEXMillions: float = Field(0.0, description="Call-side gamma exposure in millions (always positive)")
+    putGEXMillions: float = Field(0.0, description="Put-side gamma exposure in millions (always positive)")
     openInterestThousands: float = Field(description="Open interest in thousands of contracts")
     isATM: bool = Field(description="Whether this strike is at-the-money")
     normalizedGEX: float = Field(description="Normalized GEX for chart scaling (-1 to 1)")
@@ -157,6 +159,10 @@ class PillarScoredPoint(BaseModel):
     Contracts: int = Field(description="Number of contracts mappings")
     Capital_Deployed: float = Field(description="Amount mapping scalar deploying mapping mapped amount")
     Premium_Raw: float = Field(description="Raw contract premium price")
+    
+    # GEX-level density overlays
+    Call_GEX_Density: float = Field(0.0, description="Call-side GEX/OI structural density")
+    Put_GEX_Density: float = Field(0.0, description="Put-side GEX/OI structural density")
     
     # Helpful overlays serving view layer mapping logic
     Break_Even: Optional[float] = Field(None, description="Optional break-even calculation (CC only)")
@@ -311,6 +317,7 @@ class EfficiencyRequest(BaseModel):
     target_price: Optional[float] = Field(None, description="Price target for expected move calculation")
     near_date_cutoff: int = Field(0, description="DTE threshold separating near-dated from further-out (0=auto)")
     option_type: Literal["call", "put"] = Field("call", description="Option type: call (bullish) or put (bearish)")
+    skip_phantom_filter: bool = Field(False, description="Skip strike >= target and bid-ask validation for comparison")
 
 
 class DiagonalRequest(BaseModel):
@@ -321,3 +328,4 @@ class DiagonalRequest(BaseModel):
     target_price: Optional[float] = Field(None, description="Price target for expected move calculation")
     min_oi_pct: float = Field(0.0, description="Minimum open interest as %% of max OI for long leg selection")
     option_type: Literal["call", "put"] = Field("call", description="Option type: call (bullish) or put (bearish)")
+    skip_phantom_filter: bool = Field(False, description="Skip strike >= target and bid-ask validation for comparison")

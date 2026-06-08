@@ -171,6 +171,8 @@ def fetch_gex_data_raw(ticker: str, expiration_input: Optional[str] = None) -> D
         strikes.append({
             "strike": float(strike),
             "gexMillions": float(row['totalGEX'] / 1e6),
+            "callGEXMillions": float(abs(row['gex_call']) / 1e6),
+            "putGEXMillions": float(abs(row['gex_put']) / 1e6),
             "openInterestThousands": float(row['totalOI'] / 1e3),
             "isATM": bool(strike == atm_strike),
             "normalizedGEX": float(row['totalGEX'] / max_gex_absolute),

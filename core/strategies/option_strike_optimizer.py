@@ -865,7 +865,7 @@ def calculate_metrics_debit_spread(candidate: Dict, spot_price: float,
 
 def compare_efficiency(ticker: str, deadline: str, top_n: int = 5,
                        target_price: float = None, near_date_cutoff: int = None,
-                       option_type: str = "call") -> Dict:
+                       option_type: str = "call", skip_phantom_filter: bool = False) -> Dict:
     """
     Compare ITM near-dated vs OTM further-out option contracts by
     cost-to-cover (extrinsic premium / expected move) and theta-adjusted ROI.
@@ -881,6 +881,8 @@ def compare_efficiency(ticker: str, deadline: str, top_n: int = 5,
                           If None, computed adaptively as max(45, target_dte * 0.4)
                           so short weeklies don't dominate a long-dated thesis.
         option_type: 'call' (bullish) or 'put' (bearish) — defaults to 'call'
+        skip_phantom_filter: If True, skip strike >= target_price and bid-ask
+                             liquidity validation (for visual comparison).
 
     Returns:
         Dictionary with results, candidates, and warnings
@@ -1026,6 +1028,7 @@ def compare_efficiency(ticker: str, deadline: str, top_n: int = 5,
 
     # Scan candidates — prefer GEX cache data (no redundant yfinance calls),
     # but fall back to raw chain for lastPrice when GEX bid/ask are 0 (off-hours)
+    _yfinance_chain_cache = {}  # cache for fallback per expiration
     candidates = []
     for exp_info in filtered_expirations:
         exp_date_str = exp_info["expiration"]
@@ -1069,12 +1072,51 @@ def compare_efficiency(ticker: str, deadline: str, top_n: int = 5,
             else:
                 iv = raw_iv
 
+            # ── Phantom filter: skip if strike offers zero payoff at target ──
+            if not skip_phantom_filter and target_price is not None:
+                if (option_type == "call" and strike >= target_price) or \
+                   (option_type == "put" and strike <= target_price):
+                    continue
+
+            # ── Phantom filter: bid-ask liquidity check ──
+            if not skip_phantom_filter:
+                mid = (bid + ask) / 2 if bid > 0 and ask > 0 else (bid or ask or 0)
+                spread_ok = True
+                if bid < 0.10:
+                    spread_ok = False
+                elif bid > 0 and ask > 0 and mid > 0:
+                    spread_pct = (ask - bid) / mid
+                    if spread_pct > 0.50:
+                        spread_ok = False
+                if not spread_ok:
+                    # Fallback: try yfinance lastPrice for this expiration (cache per expiration)
+                    fetched = _yfinance_chain_cache.get(exp_date_str)
+                    if fetched is None:
+                        try:
+                            raw_chain = getOptionChain(ticker, expiration=exp_date_str)
+                            _yfinance_chain_cache[exp_date_str] = raw_chain
+                        except Exception:
+                            _yfinance_chain_cache[exp_date_str] = None
+                    fetched = _yfinance_chain_cache.get(exp_date_str)
+                    if fetched is not None:
+                        df = fetched.get(option_type + "s")  # 'calls' or 'puts'
+                        if df is not None and not df.empty:
+                            row = df[df['strike'] == strike]
+                            if not row.empty:
+                                lp = row.iloc[0].get('lastPrice', 0)
+                                if lp and lp > 0:
+                                    effective_price = float(lp)
+                                    last_price = float(lp)
+                                    spread_ok = True  # Accept yfinance lastPrice
+                    if not spread_ok:
+                        continue
+
             delta = calculateDelta(exp_spot, strike, t, iv, option_type)
             delta_abs = abs(delta)
 
             # Classify by delta
-            is_itm = 0.55 <= delta_abs <= 0.80
-            is_otm = 0.15 <= delta_abs <= 0.45
+            is_itm = 0.60 <= delta_abs <= 0.80
+            is_otm = 0.15 <= delta_abs <= 0.55
 
             if not is_itm and not is_otm:
                 continue
@@ -1207,9 +1249,9 @@ def compare_efficiency(ticker: str, deadline: str, top_n: int = 5,
         direction_label = "bullish" if not is_bearish else "bearish"
         warnings.append(f"target_price (${target_price:.2f}) is {'below' if not is_bearish else 'above'} spot (${spot_price:.2f}). Expected move is against {direction_label} direction.")
     if not itm_near:
-        warnings.append(f"No ITM near-dated candidates found (delta 0.55-0.80, DTE <= {near_date_cutoff}).")
+        warnings.append(f"No ITM near-dated candidates found (delta 0.60-0.80, DTE <= {near_date_cutoff}).")
     if not otm_far:
-        warnings.append(f"No OTM further-out candidates found (delta 0.15-0.45, DTE > {near_date_cutoff}).")
+        warnings.append(f"No OTM further-out candidates found (delta 0.15-0.55, DTE > {near_date_cutoff}).")
     if len(candidates) < top_n:
         warnings.append(f"Only {len(candidates)} candidates found (requested top {top_n}).")
     if len(candidates) == 0:

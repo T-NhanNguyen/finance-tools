@@ -83,7 +83,11 @@ def calculate_option_metrics(
     maint_req: float,
     ticker: str = "",
     custom_cost_basis: Optional[float] = None,
-    custom_shares: Optional[int] = None
+    custom_shares: Optional[int] = None,
+    gex_call_value: float = 0,
+    gex_put_value: float = 0,
+    call_oi_value: float = 0,
+    put_oi_value: float = 0
 ) -> dict:
     """Calculates detailed breakdown metrics for an option contract."""
 
@@ -158,7 +162,11 @@ def calculate_option_metrics(
     prem_yield = extrinsic_premium / underlying_price if underlying_price > 0 else 0
     efficiency_score = prem_yield / (max(0.001, safety_margin_float) if safety_margin_float > 0 else 0.001)
     
+    # Structural score: use per-side GEX when available for strategy-aware ranking.
+    # For CC, call gamma walls = resistance. For CSP, put gamma walls = support.
     structural_score = abs(gex_value * oi_value)
+    call_structural_score = abs(gex_call_value * call_oi_value) if gex_call_value > 0 and call_oi_value > 0 else structural_score
+    put_structural_score = abs(gex_put_value * put_oi_value) if gex_put_value > 0 and put_oi_value > 0 else structural_score
     if strategy_type.upper() == "CSP":
         eff_cost_basis = strike - premium
     else:  # CC
@@ -185,6 +193,8 @@ def calculate_option_metrics(
         "strategy_tag": strategy_tag,
         "efficiency_score": efficiency_score,
         "structural_score": structural_score,
+        "call_structural_score": call_structural_score,
+        "put_structural_score": put_structural_score,
         "eff_cost_basis": eff_cost_basis,
         "capital_efficiency_ratio": capital_efficiency_ratio
     }
