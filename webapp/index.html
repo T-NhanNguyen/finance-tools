@@ -61,6 +61,75 @@ const TABS=[
 let activeTab='gex';
 let charts={};
 
+// ─── Shared Input State ────────────────
+// Maps tabId → the DOM element for each shared field.
+// Handles key differences: Portfolio uses 'tickers', Efficiency/Diagonal use 'deadline'.
+function _sharedEl(rawId, field){
+  // Normalize: accept both 'tab-gex' (from makeForm) and 'gex' (from TABS loop)
+  const shortId=rawId.replace(/^tab-/,'');
+  const prefix='tab-'+shortId;
+  if(field==='ticker'){
+    const key=shortId==='portfolio'?'tickers':'ticker';
+    return document.getElementById(prefix+'-'+key);
+  }
+  if(field==='expiration'){
+    const key=(shortId==='efficiency'||shortId==='diagonal')?'deadline':'expiration';
+    return document.getElementById(prefix+'-'+key);
+  }
+  if(field==='target_price'){
+    return document.getElementById(prefix+'-target_price');
+  }
+  return null;
+}
+
+const SHARED_KEYS=['ticker','expiration','target_price'];
+
+// Sync shared fields from sourceTabId to all other built tabs and shared localStorage.
+function syncSharedFields(sourceTabId){
+  const shortSrc=sourceTabId.replace(/^tab-/,'');
+  SHARED_KEYS.forEach(field=>{
+    const el=_sharedEl(sourceTabId,field);
+    if(!el)return;
+    const val=el.value;
+    const lsk='fin_shared_'+field;
+    localStorage.setItem(lsk,val);
+    TABS.forEach(tab=>{
+      if(tab.id===shortSrc)return;
+      const tc=document.getElementById('tab-'+tab.id);
+      if(!tc||!tc.dataset.built)return;
+      const target=_sharedEl(tab.id,field);
+      if(target)target.value=val;
+    });
+  });
+  showTickerWarnings();
+}
+
+// Show/hide the "using first ticker" warning beneath single-ticker fields.
+function showTickerWarnings(){
+  const raw=localStorage.getItem('fin_shared_ticker')||'';
+  const parts=raw.split(',').map(s=>s.trim()).filter(Boolean);
+  ['gex','indicators','efficiency','diagonal'].forEach(tabId=>{
+    const warn=document.getElementById('tab-'+tabId+'-ticker-warn');
+    if(!warn)return;
+    if(parts.length>1){
+      warn.textContent='Using first ticker: '+parts[0]+' (from '+raw+')';
+      warn.style.display='block';
+    }else{
+      warn.style.display='none';
+    }
+  });
+}
+
+// Restore shared fields from localStorage into a tab's form fields.
+function restoreSharedFields(tabId){
+  SHARED_KEYS.forEach(field=>{
+    const el=_sharedEl(tabId,field);
+    if(!el)return;
+    const saved=localStorage.getItem('fin_shared_'+field);
+    if(saved!==null)el.value=saved;
+  });
+}
+
 function renderTabs(){
   const bar=document.getElementById('tabBar');
   bar.innerHTML=TABS.map(t=>'<button class="tab-btn'+(t.id===activeTab?' active':'')+'" onclick="switchTab(\''+t.id+'\')">'+t.label+'</button>').join('');
@@ -93,19 +162,37 @@ function makeForm(id,fields,action){
     const l=document.createElement('label');l.textContent=f.label+':';
     const inp=f.tag==='select'?(()=>{const s=document.createElement('select');f.options.forEach(o=>{const opt=document.createElement('option');opt.value=o;opt.textContent=o;s.appendChild(opt)});return s})():f.tag==='checkbox'?(()=>{const lb=document.createElement('label');lb.className='chk';const cb=document.createElement('input');cb.type='checkbox';if(f.checked)cb.checked=true;cb.id=id+'-'+f.key;lb.appendChild(cb);lb.appendChild(document.createTextNode(' '+f.label));return lb})():(()=>{const i=document.createElement('input');i.type='text';if(f.value)i.value=f.value;if(f.placeholder)i.placeholder=f.placeholder;return i})();
     if(f.tag!=='checkbox'){inp.id=id+'-'+f.key;}
-    // Restore saved value
-    const saved=localStorage.getItem('fin_'+id+'_'+f.key);
+    // Restore saved value — use shared localStorage for shared fields, per-tab otherwise
+    const lskey=f.shared?'fin_shared_'+f.key:'fin_'+id+'_'+f.key;
+    const saved=localStorage.getItem(lskey);
     if(saved!==null){if(f.tag==='checkbox'){inp.querySelector('input').checked=saved==='true';}else{inp.value=saved;}}
-    // Save on change
-    if(f.tag==='checkbox'){const cb=inp.querySelector('input');cb.onchange=function(){localStorage.setItem('fin_'+id+'_'+f.key,cb.checked);};}else{inp.onchange=function(){localStorage.setItem('fin_'+id+'_'+f.key,inp.value);};}
+    // Save on change — use shared localStorage for shared fields
+    const saveFn=f.tag==='checkbox'
+      ?function(){const cb=inp.querySelector('input');localStorage.setItem(lskey,cb.checked);}
+      :function(){localStorage.setItem(lskey,inp.value);};
+    if(f.tag==='checkbox'){const cb=inp.querySelector('input');cb.onchange=saveFn;}else{inp.onchange=saveFn;}
     r.appendChild(l);r.appendChild(inp);
+    // For shared ticker on single-ticker tabs, add warning div below the field
+    if(f.shared&&f.key==='ticker'&&id!=='tab-cs'&&id!=='tab-portfolio'){
+      const warn=document.createElement('div');warn.className='ticker-warn';
+      warn.id=id+'-ticker-warn';
+      warn.style.cssText='font-size:10px;color:#c60;margin:2px 0 0 130px';
+      r.appendChild(warn);
+    }
   });
   const btn=document.createElement('button');btn.className='btn';btn.textContent='Go';
   const sp=document.createElement('span');sp.className='spinner';sp.textContent=' loading...';
   r.appendChild(btn);r.appendChild(sp);c.appendChild(r);
   btn.onclick=function(){
-    // Save all fields before running
-    fields.forEach(f=>{const e=document.getElementById(id+'-'+f.key);if(e){if(f.tag==='checkbox'){localStorage.setItem('fin_'+id+'_'+f.key,e.checked);}else{localStorage.setItem('fin_'+id+'_'+f.key,e.value);}}});
+    // Save all fields: shared fields use shared localStorage, others use per-tab
+    fields.forEach(f=>{
+      const e=document.getElementById(id+'-'+f.key);
+      if(!e)return;
+      const lsk=f.shared?'fin_shared_'+f.key:'fin_'+id+'_'+f.key;
+      if(f.tag==='checkbox'){localStorage.setItem(lsk,e.checked);}else{localStorage.setItem(lsk,e.value);}
+    });
+    // Sync shared fields to all other built tabs
+    syncSharedFields(id);
     action();
   };
   const tb=document.createElement('div');tb.className='toolbar';
@@ -117,6 +204,9 @@ function makeForm(id,fields,action){
   tb.appendChild(copy);
   const box=document.createElement('div');box.className='result';
   c.appendChild(tb);c.appendChild(box);
+  // After building the form, restore shared values from localStorage
+  restoreSharedFields(id);
+  showTickerWarnings();
 }
 
 function jsonTable(headers,rows){
@@ -128,7 +218,7 @@ function jsonTable(headers,rows){
 
 function optSymbol(dateStr,strike,cp){
   const d=dateStr.replace(/-/g,'').slice(2);
-  const s=String(Math.round(strike));
+  const s=strike%1===0?strike.toFixed(0):strike.toFixed(1);
   return d+cp+s;
 }
 
@@ -142,8 +232,8 @@ function buildGex(){
   if(c.dataset.built)return;c.dataset.built=1;
   c.innerHTML='<h2>Gamma Exposure</h2>';
   makeForm('tab-gex',[
-    {key:'ticker',label:'Ticker',value:'MRVL'},
-    {key:'expiration',label:'Exp',placeholder:'nearest'},
+    {key:'ticker',label:'Ticker',value:'MRVL',shared:true},
+    {key:'expiration',label:'Exp',placeholder:'nearest',shared:true},
   ],()=>{
     const t=document.getElementById('tab-gex-ticker').value.trim();
     const e=document.getElementById('tab-gex-expiration').value.trim();
@@ -160,21 +250,43 @@ function buildGex(){
 
       Object.values(charts).forEach(c=>{try{c.destroy();}catch(e){}});
 
-      const labels=strikes.map(s=>s.strike.toFixed(0));
+      // Preserve decimal precision for fractional strikes (e.g. 292.5)
+      const labels=strikes.map(s=>s.strike%1===0?s.strike.toFixed(0):s.strike.toFixed(1));
       const callVals=strikes.map(s=>+(s.callGEXMillions||0).toFixed(4));
       const putVals=strikes.map(s=>-+(s.putGEXMillions||0).toFixed(4));
 
-      // Find ATM index for annotation
-      const atmIdx=strikes.reduce((best,s,i)=>Math.abs(s.strike-raw.spotPrice)<Math.abs(strikes[best].strike-raw.spotPrice)?i:best,0);
-
-      // Add a thin vertical line annotation for spot price using a plugin
+      // Add a vertical dashed line for spot price, interpolated/extrapolated
+      // on the category (bar) x-axis, clamped to chart area.
       const spotLine={id:'spotLine',afterDraw(chart){
         const ctx=chart.ctx;
+        const ca=chart.chartArea;
         const xScale=chart.scales.x;
         const yScale=chart.scales.y;
-        if(!xScale||!yScale)return;
-        const x=xScale.getPixelForValue(raw.spotPrice);
-        if(x<0||x>chart.width)return;
+        if(!xScale||!yScale||!ca||strikes.length<2)return;
+        const spot=raw.spotPrice;
+        // Find the lower bracket index: the last strike <= spot
+        let lo=0;
+        for(let i=1;i<strikes.length;i++){if(strikes[i].strike<=spot)lo=i;}
+        // Upper bracket: lo+1, but if spot >= last strike, extrapolate from last two
+        let hi;
+        if(spot>=strikes[strikes.length-1].strike){
+          lo=strikes.length-2;
+          hi=strikes.length-1;
+        }else{
+          hi=Math.min(lo+1,strikes.length-1);
+        }
+        const loPx=xScale.getPixelForTick(lo);
+        const hiPx=xScale.getPixelForTick(hi);
+        const spread=strikes[hi].strike-strikes[lo].strike;
+        let x;
+        if(spread===0){
+          x=loPx;
+        }else{
+          const ratio=(spot-strikes[lo].strike)/spread;
+          x=loPx+ratio*(hiPx-loPx);
+        }
+        // If extrapolated position falls outside the chart area, skip drawing
+        if(x<ca.left+2||x>ca.right-2)return;
         ctx.save();
         ctx.beginPath();
         ctx.moveTo(x,yScale.top);
@@ -186,7 +298,7 @@ function buildGex(){
         ctx.fillStyle='#039';
         ctx.font='10px Verdana';
         ctx.textAlign='center';
-        ctx.fillText('$'+raw.spotPrice.toFixed(2),x,yScale.top-4);
+        ctx.fillText('$'+spot.toFixed(2),x,yScale.top-4);
         ctx.restore();
       }};
 
@@ -232,7 +344,7 @@ function buildIndicators(){
   if(c.dataset.built)return;c.dataset.built=1;
   c.innerHTML='<h2>Price Chart &amp; Indicators</h2>';
   makeForm('tab-indicators',[
-    {key:'ticker',label:'Ticker',value:'MRVL'},
+    {key:'ticker',label:'Ticker',value:'MRVL',shared:true},
     {key:'period',label:'Period',value:'3mo'},
   ],()=>{
     const t=document.getElementById('tab-indicators-ticker').value.trim();
@@ -316,9 +428,9 @@ function buildCS(){
   if(c.dataset.built)return;c.dataset.built=1;
   c.innerHTML='<h2>Contract Selling Analysis</h2><div class="desc">The results from this table compare strike prices across the desired option chain on the desired ticker(s). Use this when you want to compare and analyze premiums across tickers before committing to selling contracts.</div>';
   makeForm('tab-cs',[
-    {key:'ticker',label:'Ticker(s)',value:'ASTS,MRVL'},
+    {key:'ticker',label:'Ticker(s)',value:'ASTS,MRVL',shared:true},
     {key:'strategy',label:'Strat',tag:'select',options:['CSP','CC']},
-    {key:'expiration',label:'Exp',placeholder:'nearest'},
+    {key:'expiration',label:'Exp',placeholder:'nearest',shared:true},
   ],()=>{
     const tickers=document.getElementById('tab-cs-ticker').value.split(',').map(s=>s.trim().toUpperCase()).filter(Boolean);
     const s=document.getElementById('tab-cs-strategy').value;
@@ -359,7 +471,7 @@ function buildPortfolio(){
   if(c.dataset.built)return;c.dataset.built=1;
   c.innerHTML='<h2>Diversifying Contract-Selling Allocation</h2><div class="desc">This tool is intended for larger accounts encountering liquidity issues. The tool takes the given tickers and calculates how you should partition your buying power across the tickers by following a heuristic algorithm.</div>';
   makeForm('tab-portfolio',[
-    {key:'tickers',label:'Tickers',value:'ASTS,MRVL'},
+    {key:'tickers',label:'Tickers',value:'ASTS,MRVL',shared:true},
     {key:'strategy',label:'Strat',tag:'select',options:['CSP','CC']},
   ],()=>{
     const tk=document.getElementById('tab-portfolio-tickers').value.split(',').map(s=>s.trim()).filter(Boolean);
@@ -378,11 +490,11 @@ function buildPortfolio(){
 function buildEfficiency(){
   const c=document.getElementById('tab-efficiency');
   if(c.dataset.built)return;c.dataset.built=1;
-  c.innerHTML='<h2>Efficiency Comparison</h2><div class="desc">This tool is intended to establish a leveraged position for the direction of the stock. Rather than paying premium bloat for further-dated OTM calls, we utilize ITM near-dated contracts to yield the same return for less capital.</div>';
+  c.innerHTML='<h2>Efficiency Comparison</h2><div class="desc">This tool is intended to establish a leveraged position for the direction of the stock. Rather than paying premium bloat for further-dated OTM calls, we utilize ITM near-dated contracts to yield the same return for less capital.<br><br>- Looks for ITM calls with DTE ≤ some portion of that (for leveraged near-term exposure)<br>- Looks for OTM calls expiring near or at the deadline (for cheaper long-dated exposure)</div>';
   makeForm('tab-efficiency',[
-    {key:'ticker',label:'Ticker',value:'MRVL'},
-    {key:'deadline',label:'Deadline',value:'09/18/2026'},
-    {key:'target_price',label:'Target',value:'300'},
+    {key:'ticker',label:'Ticker',value:'MRVL',shared:true},
+    {key:'deadline',label:'Deadline',value:'09/18/2026',shared:true},
+    {key:'target_price',label:'Target',value:'300',shared:true},
     {key:'otype',label:'Type',tag:'select',options:['call','put']},
     {key:'nofilter',label:'Phantom Filter',tag:'checkbox'},
   ],()=>{
@@ -414,11 +526,11 @@ function buildEfficiency(){
 function buildDiagonal(){
   const c=document.getElementById('tab-diagonal');
   if(c.dataset.built)return;c.dataset.built=1;
-  c.innerHTML='<h2>Diagonal Spread Planner</h2><div class="desc">This is a scanner that leverages the Efficiency Tool to convert the single-leg position into a dirt-cheap Poor Man\'s Covered Call/Put. I call it the \'Poorer than dirt Covered Call\'. It actually has a lot of potential for hedging against your long position if you\'re utilizing this to play puts. The diagonal setup is intended to sell weeklies against your long leg so that it not only can be used for income, but also to lower the cost basis on your long leg if the move is taking longer to play out.</div>';
+  c.innerHTML='<h2>Diagonal Spread Planner</h2><div class="desc">This is a scanner that leverages the Efficiency Tool to convert the single-leg position into a dirt-cheap Poor Man\'s Covered Call/Put. I call it the \'Poorer than dirt Covered Call\'. It actually has a lot of potential for hedging against your long position if you\'re utilizing this to play puts. The diagonal setup is intended to sell weeklies against your long leg so that it not only can be used for income, but also to lower the cost basis on your long leg if the move is taking longer to play out.<br><br>- Buys a long-dated ITM call (expiring near the deadline) and sells weekly OTM calls against it   </div>';
   makeForm('tab-diagonal',[
-    {key:'ticker',label:'Ticker',value:'ASTS'},
-    {key:'deadline',label:'Deadline',value:'09/18/2026'},
-    {key:'target_price',label:'Target',value:'100'},
+    {key:'ticker',label:'Ticker',value:'ASTS',shared:true},
+    {key:'deadline',label:'Deadline',value:'09/18/2026',shared:true},
+    {key:'target_price',label:'Target',value:'100',shared:true},
     {key:'otype',label:'Type',tag:'select',options:['call','put']},
     {key:'nofilter',label:'Phantom',tag:'checkbox'},
   ],()=>{
@@ -440,7 +552,7 @@ function buildDiagonal(){
           const longSym='.'+raw.ticker.toUpperCase()+optSymbol(pl.long_expiry,pl.long_strike,cp);
           const shortSym='-.'+raw.ticker.toUpperCase()+optSymbol(sl.short_expiry,sl.short_strike,cp);
           const link=osLink(strategy,raw.ticker,shortSym+','+longSym);
-          return[j+1,sl.short_expiry.slice(-5),'$'+sl.short_strike.toFixed(0),'$'+sl.gross_premium.toFixed(2),'−$'+sl.buyback_cost.toFixed(2),'$'+sl.net_credit.toFixed(2),'$'+sl.long_close_value.toFixed(2),'$'+sl.break_even.toFixed(2),sl.roi_max+'%','<a href="'+link+'" target="_blank">view</a>'];
+          return[j+1,sl.short_expiry.slice(-5),'$'+sl.short_strike.toFixed(1),'$'+sl.gross_premium.toFixed(2),'−$'+sl.buyback_cost.toFixed(2),'$'+sl.net_credit.toFixed(2),'$'+sl.long_close_value.toFixed(2),'$'+sl.break_even.toFixed(2),sl.roi_max+'%','<a href="'+link+'" target="_blank">view</a>'];
         });
         html+=jsonTable([['Rank','right'],['Short Exp','center'],['Short Strike','right'],['Short Prem','right'],['−20% Buybk','right'],['= Net Kept','right'],['+ Long Value','right'],['Break-Even','center'],['ROI (%)','right'],['Chart','center']],rows);
       });

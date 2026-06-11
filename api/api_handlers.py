@@ -412,13 +412,15 @@ def getDiagonalData(request: DiagonalRequest) -> Dict:
     """
     try:
         # Step 1: efficiency comparison as input
+        # In diagonal mode, skip the phantom filter so ITM long legs past the target
+        # price are not silently excluded — they are valid building blocks for diagonals.
         efficiency = compare_efficiency(
             ticker=request.ticker,
             deadline=request.deadline,
             top_n=request.top_n,
             target_price=request.target_price,
             option_type=request.option_type,
-            skip_phantom_filter=request.skip_phantom_filter
+            skip_phantom_filter=True  # diagonal mode: keep all potential long legs
         )
         if "error" in efficiency:
             return ErrorResponse(error=efficiency["error"], ticker=request.ticker).model_dump()

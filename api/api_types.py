@@ -326,6 +326,6 @@ class DiagonalRequest(BaseModel):
     deadline: str = Field(description="Deadline date (YYYY-MM-DD or MM/DD/YYYY)")
     top_n: int = Field(5, description="Number of top candidates to evaluate")
     target_price: Optional[float] = Field(None, description="Price target for expected move calculation")
-    min_oi_pct: float = Field(0.0, description="Minimum open interest as %% of max OI for long leg selection")
+    min_oi_pct: float = Field(10.0, description="Minimum open interest as %% of max OI for long leg selection (default: 10.0 = 10%%)")
     option_type: Literal["call", "put"] = Field("call", description="Option type: call (bullish) or put (bearish)")
     skip_phantom_filter: bool = Field(False, description="Skip strike >= target and bid-ask validation for comparison")

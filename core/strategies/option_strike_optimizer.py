@@ -1052,17 +1052,17 @@ def compare_efficiency(ticker: str, deadline: str, top_n: int = 5,
             # - If never populated: 0 bid/ask → skip gracefully (no wasteful API call)
             bid = s.get(_opt_bid, 0) or 0
             ask = s.get(_opt_ask, 0) or 0
+            # Require both bid and ask for reliable pricing. If bid is 0,
+            # there is no liquidity to sell — the contract cannot be reliably
+            # entered or exited. Skip ask-only (0-bid) contracts entirely.
             if bid > 0 and ask > 0:
-                effective_price = ask  # What you'd pay
+                effective_price = ask  # What you'd pay (long)
                 last_price = (bid + ask) / 2
             elif bid > 0:
                 effective_price = bid
                 last_price = bid
-            elif ask > 0:
-                effective_price = ask
-                last_price = ask
             else:
-                # Cache has no price data — don't fetch fresh (market closed, nothing new)
+                # No bid or no bid+ask — illiquid, cannot price reliably
                 continue
 
             # IV from GEX cache
@@ -1080,34 +1080,37 @@ def compare_efficiency(ticker: str, deadline: str, top_n: int = 5,
 
             # ── Phantom filter: bid-ask liquidity check ──
             if not skip_phantom_filter:
-                mid = (bid + ask) / 2 if bid > 0 and ask > 0 else (bid or ask or 0)
+                mid = (bid + ask) / 2
                 spread_ok = True
                 if bid < 0.10:
                     spread_ok = False
-                elif bid > 0 and ask > 0 and mid > 0:
+                elif ask > 0 and mid > 0:
                     spread_pct = (ask - bid) / mid
                     if spread_pct > 0.50:
                         spread_ok = False
                 if not spread_ok:
-                    # Fallback: try yfinance lastPrice for this expiration (cache per expiration)
-                    fetched = _yfinance_chain_cache.get(exp_date_str)
-                    if fetched is None:
-                        try:
-                            raw_chain = getOptionChain(ticker, expiration=exp_date_str)
-                            _yfinance_chain_cache[exp_date_str] = raw_chain
-                        except Exception:
-                            _yfinance_chain_cache[exp_date_str] = None
-                    fetched = _yfinance_chain_cache.get(exp_date_str)
-                    if fetched is not None:
-                        df = fetched.get(option_type + "s")  # 'calls' or 'puts'
-                        if df is not None and not df.empty:
-                            row = df[df['strike'] == strike]
-                            if not row.empty:
-                                lp = row.iloc[0].get('lastPrice', 0)
-                                if lp and lp > 0:
-                                    effective_price = float(lp)
-                                    last_price = float(lp)
-                                    spread_ok = True  # Accept yfinance lastPrice
+                    # Fallback: only if bid > 0 (yfinance may have fresher lastPrice
+                    # for a known-liquid strike). Skip fallback if bid was 0 —
+                    # zero bid means no one is willing to buy, so no reliable price.
+                    if bid > 0:
+                        fetched = _yfinance_chain_cache.get(exp_date_str)
+                        if fetched is None:
+                            try:
+                                raw_chain = getOptionChain(ticker, expiration=exp_date_str)
+                                _yfinance_chain_cache[exp_date_str] = raw_chain
+                            except Exception:
+                                _yfinance_chain_cache[exp_date_str] = None
+                        fetched = _yfinance_chain_cache.get(exp_date_str)
+                        if fetched is not None:
+                            df = fetched.get(option_type + "s")  # 'calls' or 'puts'
+                            if df is not None and not df.empty:
+                                row = df[df['strike'] == strike]
+                                if not row.empty:
+                                    lp = row.iloc[0].get('lastPrice', 0)
+                                    if lp and lp > 0:
+                                        effective_price = float(lp)
+                                        last_price = float(lp)
+                                        spread_ok = True  # Accept yfinance lastPrice
                     if not spread_ok:
                         continue
 
@@ -1168,6 +1171,13 @@ def compare_efficiency(ticker: str, deadline: str, top_n: int = 5,
                 if theta_burn > 0:
                     theta_roi = expected_pnl / theta_burn
 
+            # Break-even price: the underlying price at expiration where the trade nets zero
+            if option_type == "call":
+                break_even_price = strike + effective_price
+            else:
+                break_even_price = strike - effective_price
+            be_distance_pct = abs(break_even_price - spot_price) / spot_price * 100.0
+
             candidate = {
                 "strike": strike,
                 "expiration": exp_date_str,
@@ -1187,6 +1197,8 @@ def compare_efficiency(ticker: str, deadline: str, top_n: int = 5,
                 "category": category,
                 "oi": int(s.get(_opt_oi, 0) * 1000),
                 "volume": int(s.get("volume", 0)),
+                "break_even_price": round(break_even_price, 2),
+                "break_even_distance_pct": round(be_distance_pct, 2),
                 "iv": round(iv, 4),
                 "combined_score": 0.0,  # will be set after normalization
                 "option_type": option_type
@@ -1208,6 +1220,7 @@ def compare_efficiency(ticker: str, deadline: str, top_n: int = 5,
     # Normalize and compute combined score
     cost_values = [c["cost_to_cover"] for c in candidates if c["cost_to_cover"] is not None]
     theta_values = [c["theta_roi"] for c in candidates if c["theta_roi"] is not None]
+    be_values = [c["break_even_distance_pct"] for c in candidates if c["break_even_distance_pct"] is not None]
 
     cost_min = min(cost_values) if cost_values else 0
     cost_max = max(cost_values) if cost_values else 1
@@ -1217,16 +1230,23 @@ def compare_efficiency(ticker: str, deadline: str, top_n: int = 5,
     theta_max = max(theta_values) if theta_values else 1
     theta_range = theta_max - theta_min if theta_max != theta_min else 1
 
+    be_min = min(be_values) if be_values else 0
+    be_max = max(be_values) if be_values else 1
+    be_range = be_max - be_min if be_max != be_min else 1
+
     for c in candidates:
         # Cost score: lower cost_to_cover is better (invert and normalize 0-1)
         cost_score = 1.0 - ((c["cost_to_cover"] - cost_min) / cost_range) if c["cost_to_cover"] is not None else 0.0
         # Theta ROI score: higher is better (normalize 0-1)
         theta_score = ((c["theta_roi"] - theta_min) / theta_range) if c["theta_roi"] is not None else 0.0
+        # Break-even distance score: lower distance to spot is better (invert and normalize 0-1)
+        be_score = 1.0 - ((c["break_even_distance_pct"] - be_min) / be_range) if c["break_even_distance_pct"] is not None else 0.0
         # Safety: clamp scores to valid range
         cost_score = max(0.0, min(1.0, cost_score))
         theta_score = max(0.0, min(1.0, theta_score))
-        # Combined: equal weight
-        c["combined_score"] = round(0.5 * cost_score + 0.5 * theta_score, 4)
+        be_score = max(0.0, min(1.0, be_score))
+        # Combined: emphasize break-even (50%) over cost (25%) and theta (25%)
+        c["combined_score"] = round(0.25 * cost_score + 0.25 * theta_score + 0.5 * be_score, 4)
 
     # Sort by combined score descending
     candidates.sort(key=lambda x: x["combined_score"], reverse=True)
@@ -1339,8 +1359,8 @@ def format_efficiency_results(result: Dict) -> str:
 
     # Ranked summary table with Category column
     lines.append(f"\n  ── Ranked Summary (Top {len(candidates)}) ──")
-    summary_headers = ["Rank", "Category", "Expiry", "DTE", "Strike", "Price", "Intr", "Extr",
-                       "Cost/Cov", "ThetaROI", "ExpPnL", "Delta", "Score"]
+    summary_headers = ["Rank", "Category", "Expiry", "DTE", "Strike", "Price", "B/E",
+                       "Intr", "Extr", "Cost/Cov", "ThetaROI", "ExpPnL", "Delta", "Score"]
     summary_rows = []
     for c in candidates:
         cat_display = c["category"]
@@ -1360,6 +1380,7 @@ def format_efficiency_results(result: Dict) -> str:
             c["dte"],
             f"${c['strike']:.0f}",
             f"${c['effective_price']:.2f}",
+            f"${c['break_even_price']:.2f}",
             f"${c['intrinsic']:.2f}",
             f"${c['extrinsic']:.2f}",
             f"{c['cost_to_cover']:.2f}x" if c['cost_to_cover'] is not None else "N/A",
@@ -1371,20 +1392,20 @@ def format_efficiency_results(result: Dict) -> str:
 
     lines.append(tabulate(summary_rows, headers=summary_headers, tablefmt="simple",
                           colalign=("right", "center", "center", "right", "right",
-                                    "right", "right", "right", "right", "right",
+                                    "right", "right", "right", "right", "right", "right",
                                     "right", "right", "right")))
 
     # ITM Near-Dated group table
     itm_near = result.get("itm_near", [])
     if itm_near:
         lines.append(f"\n  ── ITM Near-Dated (DTE ≤ {boundary}, Delta 0.55—0.80) ──")
-        itm_headers = ["Rank", "Expiry", "DTE", "Strike", "Price", "Intrinsic",
-                       "Extrinsic", "Cost/Cov", "ThetaROI", "ExpPnL", "Score"]
+        itm_headers = ["Rank", "Expiry", "DTE", "Strike", "Price", "B/E",
+                       "Intrinsic", "Extrinsic", "Cost/Cov", "ThetaROI", "ExpPnL", "Score"]
         itm_rows = []
         for c in itm_near:
             itm_rows.append([
                 c["rank"], c["expiration"][-5:], c["dte"],
-                f"${c['strike']:.0f}", f"${c['effective_price']:.2f}",
+                f"${c['strike']:.0f}", f"${c['effective_price']:.2f}", f"${c['break_even_price']:.2f}",
                 f"${c['intrinsic']:.2f}", f"${c['extrinsic']:.2f}",
                 f"{c['cost_to_cover']:.2f}x" if c['cost_to_cover'] is not None else "N/A",
                 f"{c['theta_roi']:.2f}x" if c['theta_roi'] is not None else "N/A",
@@ -1398,13 +1419,13 @@ def format_efficiency_results(result: Dict) -> str:
     otm_far = result.get("otm_far", [])
     if otm_far:
         lines.append(f"\n  ── OTM Further-Out (DTE > {boundary}, Delta 0.15—0.45) ──")
-        otm_headers = ["Rank", "Expiry", "DTE", "Strike", "Price", "Intrinsic",
-                       "Extrinsic", "Cost/Cov", "ThetaROI", "ExpPnL", "Score"]
+        otm_headers = ["Rank", "Expiry", "DTE", "Strike", "Price", "B/E",
+                       "Intrinsic", "Extrinsic", "Cost/Cov", "ThetaROI", "ExpPnL", "Score"]
         otm_rows = []
         for c in otm_far:
             otm_rows.append([
                 c["rank"], c["expiration"][-5:], c["dte"],
-                f"${c['strike']:.0f}", f"${c['effective_price']:.2f}",
+                f"${c['strike']:.0f}", f"${c['effective_price']:.2f}", f"${c['break_even_price']:.2f}",
                 f"${c['intrinsic']:.2f}", f"${c['extrinsic']:.2f}",
                 f"{c['cost_to_cover']:.2f}x" if c['cost_to_cover'] is not None else "N/A",
                 f"{c['theta_roi']:.2f}x" if c['theta_roi'] is not None else "N/A",
@@ -1534,7 +1555,7 @@ def _find_top_short_legs(
     return results
 
 
-def plan_diagonal_spreads(efficiency_result: Dict, top_n: int = 5, min_oi_pct: float = 0.0,
+def plan_diagonal_spreads(efficiency_result: Dict, top_n: int = 5, min_oi_pct: float = 10.0,
                             option_type: str = "call") -> List[Dict]:
     """
     From the efficiency comparison results, build diagonal spread plans
@@ -1798,7 +1819,7 @@ def format_diagonal_results(diagonal_plans: List[Dict], ticker: str = "", deadli
             pa_rows.append([
                 rank_i,
                 sl["short_expiry"][-5:],
-                f"${sl['short_strike']:.0f}",
+                f"${sl['short_strike']:.1f}",
                 f"${sl['gross_premium']:.2f}",
                 f"−${sl['buyback_cost']:.2f}",
                 f"${sl['net_credit']:.2f}",
@@ -1883,8 +1904,8 @@ def run_optimizer_scanner():
     parser.add_argument(
         "--min-oi-pct",
         type=float,
-        default=0.0,
-        help="Minimum open interest as %% of max OI in chain for long leg selection (default: 0 = no filter)"
+        default=10.0,
+        help="Minimum open interest as %% of max OI in chain for long leg selection (default: 10.0 = 10%%)"
     )
 
     parser.add_argument(
@@ -1901,13 +1922,17 @@ def run_optimizer_scanner():
             args.near_date_cutoff = 90
 
     # Run efficiency comparison (always needed for both modes)
+    # In diagonal mode, skip the phantom filter so ITM long legs past the target
+    # price are not silently excluded — they are valid building blocks for diagonals.
+    skip_phantom = args.mode == "diagonal"
     result = compare_efficiency(
         ticker=args.ticker,
         deadline=args.deadline_date,
         top_n=args.top_n,
         target_price=args.target_price,
         near_date_cutoff=args.near_date_cutoff,
-        option_type=args.option_type
+        option_type=args.option_type,
+        skip_phantom_filter=skip_phantom
     )
 
     if "error" in result:
